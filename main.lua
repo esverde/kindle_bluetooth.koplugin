@@ -21,19 +21,29 @@ local BluetoothController = WidgetContainer:extend {
     config = {
         device_path = "/dev/input/event6",
         invert_layout = false,
+        use_analog_mode = true,  -- true = analog joystick, false = d-pad mode
 
         -- Key code mappings: positive = next page, negative = prev page
         key_map = {
             [304] = 1, [307] = 1, [310] = 1,
             [305] = -1, [308] = -1, [311] = -1,
         },
-        -- Joystick axis mappings
-        joy_map = {
+        -- D-pad mode: discrete axis values (codes 16=X, 17=Y)
+        dpad_map = {
             [17] = { [1] = 1, [-1] = -1 },
             [16] = { [-1] = 1, [1] = -1 }
-        }
+        },
+        -- Analog mode: continuous axis values 0-65535 (codes 0=X, 1=Y)
+        analog_map = {
+            [1] = { axis = "Y", low_dir = -1, high_dir = 1 },  -- Y axis: up=prev, down=next
+            [0] = { axis = "X", low_dir = 1, high_dir = -1 }   -- X axis: left=next, right=prev
+        },
+        analog_threshold = 16384,  -- Dead zone threshold (center is 32768)
     },
     settings_file = DataStorage:getSettingsDir() .. "/bluetooth.lua",
+
+    -- Runtime state for analog mode debouncing
+    last_analog_direction = {},
 }
 
 function BluetoothController:init()
@@ -267,10 +277,49 @@ function BluetoothController:parseInputDirection(ev)
         return self.config.key_map[ev.code]
     end
 
-    -- Handle joystick/axis events
-    if ev.type == C.EV_ABS and ev.value ~= 0 then
-        local axis_map = self.config.joy_map[ev.code]
-        return axis_map and axis_map[ev.value]
+    -- Handle axis events
+    if ev.type == C.EV_ABS then
+        if self.config.use_analog_mode then
+            return self:parseAnalogInput(ev)
+        else
+            return self:parseDpadInput(ev)
+        end
+    end
+
+    return nil
+end
+
+-- Parse D-pad discrete axis input (codes 16, 17 with values -1, 0, 1)
+function BluetoothController:parseDpadInput(ev)
+    if ev.value == 0 then return nil end
+    local axis_map = self.config.dpad_map[ev.code]
+    return axis_map and axis_map[ev.value]
+end
+
+-- Parse analog joystick input (codes 0, 1 with values 0-65535)
+function BluetoothController:parseAnalogInput(ev)
+    local mapping = self.config.analog_map[ev.code]
+    if not mapping then return nil end
+
+    local center = 32768
+    local threshold = self.config.analog_threshold or 16384
+    local value = ev.value
+
+    -- Determine current direction based on threshold
+    local current_dir = 0
+    if value < (center - threshold) then
+        current_dir = mapping.low_dir
+    elseif value > (center + threshold) then
+        current_dir = mapping.high_dir
+    end
+
+    -- Debounce: only trigger on direction change
+    local last_dir = self.last_analog_direction[ev.code] or 0
+    self.last_analog_direction[ev.code] = current_dir
+
+    -- Only return direction when transitioning from center to a direction
+    if current_dir ~= 0 and last_dir == 0 then
+        return current_dir
     end
 
     return nil
@@ -309,7 +358,30 @@ function BluetoothController:addToMainMenu(menu_items)
                     self:saveSettings()
                 end
             },
-            -- 3. Reload device
+            -- 3. Input mode selection
+            {
+                text = _("Joystick Mode"),
+                sub_item_table = {
+                    {
+                        text = _("Analog Joystick"),
+                        checked_func = function() return self.config.use_analog_mode end,
+                        callback = function()
+                            self.config.use_analog_mode = true
+                            self.last_analog_direction = {}  -- Reset debounce state
+                            self:saveSettings()
+                        end
+                    },
+                    {
+                        text = _("D-Pad"),
+                        checked_func = function() return not self.config.use_analog_mode end,
+                        callback = function()
+                            self.config.use_analog_mode = false
+                            self:saveSettings()
+                        end
+                    }
+                }
+            },
+            -- 4. Reload device
             {
                 text = _("Reload Device"),
                 callback = function()
