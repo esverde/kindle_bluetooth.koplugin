@@ -283,6 +283,26 @@ function BluetoothController:onDispatcherRegisterActions()
 end
 
 -- =======================================================
+--  System Event Handlers
+-- =======================================================
+
+function BluetoothController:onOutOfScreenSaver()
+    logger.info("BT Plugin: Device wakeup detected, scheduling reload...")
+    -- Delay 3s to allow Bluetooth stack to recover/reconnect
+    UIManager:scheduleIn(3.0, function()
+        -- Only attempt reload if device file exists (controller is connected)
+        if self:deviceExists(self.config.device_path) then
+            logger.info("BT Plugin: Wakeup - Device found, reloading...")
+            if self:reloadDevice() then
+                UIManager:show(InfoMessage:new{ text = _("BT Controller Reconnected"), timeout = 2 })
+            end
+        else
+            logger.info("BT Plugin: Wakeup - Device not found, skipping reload")
+        end
+    end)
+end
+
+-- =======================================================
 --  Input Event Processing
 -- =======================================================
 
