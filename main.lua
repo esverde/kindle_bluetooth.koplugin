@@ -6,7 +6,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Event = require("ui/event")
 local logger = require("logger")
 local DataStorage = require("datastorage")
-local time = require("ui/time")  -- KOReader's time utilities
+local time = require("ui/time")
 local _ = require("gettext")
 local ffi = require("ffi")
 local C = ffi.C
@@ -15,7 +15,7 @@ local C = ffi.C
 local AXIS_CENTER_DEFAULT = 32768
 local AXIS_THRESHOLD_DEFAULT = 16384
 local AXIS_MAX_VALUE = 65535
-local TRIGGER_COOLDOWN_MS = 500  -- Minimum time between triggers (milliseconds)
+local TRIGGER_COOLDOWN_MS = 500
 
 -- MODULE-LEVEL shared state (persists across all instances)
 -- This is critical because KOReader may create multiple plugin instances
@@ -26,7 +26,7 @@ local _shared_axis_values = {}  -- Track all axis values for all-axes-centered c
 
 local BluetoothController = WidgetContainer:extend {
     name = "BluetoothController",
-    is_doc_only = false,  -- Load regardless of whether a document is open
+    is_doc_only = false,
 
     -- State variables for Bluetooth toggle debouncing
     last_action_time = 0,
@@ -166,7 +166,6 @@ function BluetoothController:registerInputHook()
 
     Device.input:registerEventAdjustHook(hook_func)
     _shared_hook_registered = true
-    logger.info("BT Plugin: Input hook registered")
 end
 
 -- =======================================================
@@ -190,12 +189,10 @@ function BluetoothController:ensureConnected()
         return false
     end
 
-    -- Reset shared state on new connection (prevents stale axis values)
+    -- Reset shared state on new connection
     _shared_axis_values = {}
     _shared_triggered = false
 
-    -- Attempt connection
-    logger.info("BT Plugin: Found device, connecting to " .. path)
     local success, err = pcall(function() input:open(path) end)
 
     if not success then
@@ -226,12 +223,10 @@ function BluetoothController:reloadDevice()
         pcall(function() input:close(path) end)
     end
 
-    -- Reset shared state on reload (prevents stale axis values)
+    -- Reset shared state on reload
     _shared_axis_values = {}
     _shared_triggered = false
 
-    -- Reopen device
-    logger.warn("BT Plugin: Reload - Re-opening " .. path)
     local success = pcall(function() input:open(path) end)
     return success
 end
@@ -292,38 +287,25 @@ end
 -- =======================================================
 
 function BluetoothController:handleInputEvent(ev)
-    -- Log all incoming events for debugging
-    logger.info(string.format("BT DEBUG: Event received - type=%d, code=%d, value=%d",
-        ev.type or -1, ev.code or -1, ev.value or -1))
-
     local direction = self:parseInputDirection(ev)
     if not direction then return end
 
-    -- Apply inversion if configured
     if self.config.invert_layout then
         direction = -direction
     end
 
-    logger.warn(string.format("BT DEBUG: >>> PAGE TURN TRIGGERED <<< direction=%d", direction))
     UIManager:sendEvent(Event:new("GotoViewRel", direction))
-    -- Mark event as consumed by setting type to invalid value.
-    -- This is the standard way to consume events in eventAdjustHook callbacks,
-    -- preventing the event from being processed by other handlers.
-    ev.type = -1
+    ev.type = -1 -- Consume event
 end
 
 function BluetoothController:parseInputDirection(ev)
     -- Handle key press events
     if ev.type == C.EV_KEY and (ev.value == 1 or ev.value == 2) then
-        logger.info(string.format("BT DEBUG: Key event - code=%d, value=%d, mapped=%s",
-            ev.code, ev.value, tostring(self.config.key_map[ev.code])))
         return self.config.key_map[ev.code]
     end
 
     -- Handle axis events
     if ev.type == C.EV_ABS then
-        logger.info(string.format("BT DEBUG: ABS event - code=%d, value=%d, analog_mode=%s",
-            ev.code, ev.value, tostring(self.config.use_analog_mode)))
         if self.config.use_analog_mode then
             return self:parseAnalogInput(ev)
         else
@@ -338,96 +320,64 @@ end
 function BluetoothController:parseDpadInput(ev)
     if ev.value == 0 then return nil end
     local axis_map = self.config.dpad_map[ev.code]
-    local result = axis_map and axis_map[ev.value]
-    logger.info(string.format("BT DEBUG: D-pad - code=%d, value=%d, result=%s",
-        ev.code, ev.value, tostring(result)))
-    return result
+    return axis_map and axis_map[ev.value]
 end
 
 -- Parse analog joystick input (codes 0, 1 with values 0-65535)
 -- Uses COMBINED debouncing: state-based (must return to center) + time-based (cooldown)
+-- Parse analog joystick input (codes 0, 1 with values 0-65535)
+-- Uses COMBINED debouncing: state-based (must return to deadzone) + time-based
 function BluetoothController:parseAnalogInput(ev)
     local mapping = self.config.analog_map[ev.code]
-    if not mapping then
-        logger.info(string.format("BT DEBUG: Analog - code=%d not in mapping, ignored", ev.code))
-        return nil
-    end
+    if not mapping then return nil end
 
     local center = self:getAxisCenter(ev.code)
     local threshold = self.config.analog_threshold or AXIS_THRESHOLD_DEFAULT
-
-    -- Calculate deviation from center
     local deviation = math.abs(ev.value - center)
 
-    -- Track ALL axis values for all-axes-centered check
     _shared_axis_values[ev.code] = deviation
-
-    logger.info(string.format("BT DEBUG: Analog - axis=%s, value=%d, center=%d, deviation=%d, threshold=%d, triggered=%s",
-        mapping.axis, ev.value, center, deviation, threshold, tostring(_shared_triggered)))
 
     -- Check if within dead zone
     if deviation <= threshold then
-        -- Only reset triggered if ALL mapped axes are in dead zone
+        -- Only reset triggered state if ALL mapped axes are in dead zone
         if _shared_triggered then
             local all_centered = true
             for axis_code, axis_deviation in pairs(_shared_axis_values) do
-                -- Only consider axes that are mapped in the current config
-                if self.config.analog_map[axis_code] then
-                    if axis_deviation > threshold then
-                        all_centered = false
-                        logger.info(string.format("BT DEBUG: Axis %d still extended (deviation=%d), not resetting",
-                            axis_code, axis_deviation))
-                        break
-                    end
+                if self.config.analog_map[axis_code] and axis_deviation > threshold then
+                    all_centered = false
+                    break
                 end
             end
             if all_centered then
                 _shared_triggered = false
-                logger.info("BT DEBUG: Analog - ALL axes returned to center, reset triggered state")
             end
         end
-        return nil  -- Within dead zone, ignore
-    end
-
-    -- Beyond threshold - check if we can trigger
-
-    -- State-based debouncing: must have returned to center since last trigger
-    if _shared_triggered then
-        logger.info("BT DEBUG: Analog - already triggered, waiting for ALL axes to return to center")
         return nil
     end
 
-    -- Time-based debouncing: check cooldown (additional safety)
+    -- State-based debouncing: must have returned to center
+    if _shared_triggered then return nil end
+
+    -- Time-based debouncing: check cooldown
     local now = time:now()
     local now_ms = time.to_ms(now)
 
     if _shared_last_trigger_time then
         local last_ms = time.to_ms(_shared_last_trigger_time)
-        local elapsed_ms = now_ms - last_ms
-        logger.info(string.format("BT DEBUG: Cooldown check - elapsed=%dms, cooldown=%dms",
-            elapsed_ms, TRIGGER_COOLDOWN_MS))
-        if elapsed_ms < TRIGGER_COOLDOWN_MS then
-            logger.info("BT DEBUG: Analog - in cooldown, ignored")
+        if (now_ms - last_ms) < TRIGGER_COOLDOWN_MS then
             return nil
         end
-    else
-        logger.info("BT DEBUG: First trigger - no previous time recorded")
     end
 
-    -- Determine direction based on value
-    local direction
-    if ev.value < center then
-        direction = mapping.low_dir
-    else
-        direction = mapping.high_dir
-    end
-
-    -- Set triggered state and record time (both prevent re-triggering)
+    -- Trigger action
     _shared_triggered = true
     _shared_last_trigger_time = now
-    logger.warn(string.format("BT DEBUG: Analog TRIGGER - axis=%s, direction=%d, time=%d",
-        mapping.axis, direction, now_ms))
-    return direction
+
+    if ev.value < center then
+        return mapping.low_dir
+    else
+        return mapping.high_dir
+    end
 end
 
 -- Get center value for an axis (supports per-axis calibration)
