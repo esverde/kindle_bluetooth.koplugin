@@ -10,6 +10,11 @@ local _ = require("gettext")
 local ffi = require("ffi")
 local C = ffi.C
 
+-- Constants
+local AXIS_CENTER_DEFAULT = 32768
+local AXIS_THRESHOLD_DEFAULT = 16384
+local AXIS_MAX_VALUE = 65535
+
 local BluetoothController = WidgetContainer:extend {
     name = "BluetoothController",
 
@@ -38,14 +43,14 @@ local BluetoothController = WidgetContainer:extend {
             [1] = { axis = "Y", low_dir = -1, high_dir = 1 },  -- Y axis: up=prev, down=next
             [0] = { axis = "X", low_dir = 1, high_dir = -1 }   -- X axis: left=next, right=prev
         },
-        analog_center = { [0] = 32768, [1] = 32768 },  -- Center value per axis
+        analog_center = { [0] = AXIS_CENTER_DEFAULT, [1] = AXIS_CENTER_DEFAULT },  -- Center value per axis
         center_deadzone = 0.05,  -- 5% dead zone around center (for stick drift tolerance)
-        analog_threshold = 16384,  -- Trigger threshold from center
+        analog_threshold = AXIS_THRESHOLD_DEFAULT,  -- Trigger threshold from center
     },
     settings_file = DataStorage:getSettingsDir() .. "/bluetooth.lua",
 
     -- Runtime state for analog mode
-    analog_axis_values = { [0] = 32768, [1] = 32768 },  -- Cache current axis values
+    analog_axis_values = { [0] = AXIS_CENTER_DEFAULT, [1] = AXIS_CENTER_DEFAULT },  -- Cache current axis values
     analog_triggered = false,  -- Global lock: true = waiting for return to center
     cached_center_deadzone = nil,  -- Cached dead zone value (computed on first use)
 }
@@ -181,7 +186,7 @@ function BluetoothController:ensureConnected()
     end
 
     -- Attempt connection
-    logger.warn("BT Plugin: Found device, connecting to " .. path)
+    logger.info("BT Plugin: Found device, connecting to " .. path)
     local success, err = pcall(function() input:open(path) end)
 
     if not success then
@@ -247,7 +252,13 @@ end
 
 function BluetoothController:setBluetoothState(enable)
     local val = enable and 0 or 1
-    os.execute(string.format("lipc-set-prop com.lab126.btfd BTflightMode %d", val))
+    local cmd = string.format("lipc-set-prop com.lab126.btfd BTflightMode %d", val)
+    local ok = os.execute(cmd)
+
+    if not ok then
+        logger.warn("BT Plugin: Failed to execute: " .. cmd)
+    end
+
     local msg = enable and _("Bluetooth enabled") or _("Bluetooth disabled")
     UIManager:show(InfoMessage:new { text = msg, timeout = 2 })
 end
@@ -310,7 +321,7 @@ function BluetoothController:parseAnalogInput(ev)
     if not mapping then return nil end
 
     local center = self:getAxisCenter(ev.code)
-    local threshold = self.config.analog_threshold or 16384
+    local threshold = self.config.analog_threshold or AXIS_THRESHOLD_DEFAULT
 
     -- Update cached axis value
     self.analog_axis_values[ev.code] = ev.value
@@ -357,14 +368,14 @@ function BluetoothController:getAxisCenter(axis_code)
     if centers and centers[axis_code] then
         return centers[axis_code]
     end
-    return 32768  -- Default center
+    return AXIS_CENTER_DEFAULT
 end
 
 -- Get center dead zone size (cached for performance)
 function BluetoothController:getCenterDeadzone()
     if not self.cached_center_deadzone then
         local percent = self.config.center_deadzone or 0.05
-        self.cached_center_deadzone = math.floor(65535 * percent)
+        self.cached_center_deadzone = math.floor(AXIS_MAX_VALUE * percent)
     end
     return self.cached_center_deadzone
 end
@@ -456,9 +467,9 @@ function BluetoothController:addToMainMenu(menu_items)
                 callback = function()
                     self:loadSettings()
                     if self:reloadDevice() then
-                        UIManager:show(InfoMessage:new{ text = "Device loaded", timeout = 2 })
+                        UIManager:show(InfoMessage:new{ text = _("Device loaded"), timeout = 2 })
                     else
-                        UIManager:show(InfoMessage:new{ text = "Failed to load", timeout = 2 })
+                        UIManager:show(InfoMessage:new{ text = _("Failed to load"), timeout = 2 })
                     end
                 end
             }
