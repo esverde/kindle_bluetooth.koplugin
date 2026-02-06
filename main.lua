@@ -45,8 +45,9 @@ local BluetoothController = WidgetContainer:extend {
     settings_file = DataStorage:getSettingsDir() .. "/bluetooth.lua",
 
     -- Runtime state for analog mode
-    analog_axis_values = { [0] = 32768, [1] = 32768 },  -- Cache current axis values (X, Y)
+    analog_axis_values = { [0] = 32768, [1] = 32768 },  -- Cache current axis values
     analog_triggered = false,  -- Global lock: true = waiting for return to center
+    cached_center_deadzone = nil,  -- Cached dead zone value (computed on first use)
 }
 
 function BluetoothController:init()
@@ -86,6 +87,9 @@ function BluetoothController:loadSettings()
     for key, value in pairs(user_config) do
         self.config[key] = value
     end
+
+    -- Clear cached values when config changes
+    self.cached_center_deadzone = nil
 end
 
 -- Serializes config to file with indentation and sorted keys
@@ -356,28 +360,21 @@ function BluetoothController:getAxisCenter(axis_code)
     return 32768  -- Default center
 end
 
--- Get center dead zone size (in raw value units)
+-- Get center dead zone size (cached for performance)
 function BluetoothController:getCenterDeadzone()
-    local percent = self.config.center_deadzone or 0.05  -- Default 5%
-    return math.floor(65535 * percent)  -- Convert percentage to raw units
+    if not self.cached_center_deadzone then
+        local percent = self.config.center_deadzone or 0.05
+        self.cached_center_deadzone = math.floor(65535 * percent)
+    end
+    return self.cached_center_deadzone
 end
 
--- Check if a value is within the center dead zone
-function BluetoothController:isValueCentered(axis_code, value)
-    local center = self:getAxisCenter(axis_code)
-    local deadzone = self:getCenterDeadzone()
-    return math.abs(value - center) <= deadzone
-end
-
--- Check if all axes are within the center dead zone (joystick at center)
+-- Check if all axes are within the center dead zone
 function BluetoothController:isJoystickCentered(threshold)
-    local center_deadzone = self:getCenterDeadzone()
-    -- Use the larger of threshold and center_deadzone for return-to-center check
-    local effective_zone = math.max(threshold, center_deadzone)
+    local deadzone = math.max(threshold, self:getCenterDeadzone())
 
     for code, value in pairs(self.analog_axis_values) do
-        local center = self:getAxisCenter(code)
-        if math.abs(value - center) > effective_zone then
+        if math.abs(value - self:getAxisCenter(code)) > deadzone then
             return false
         end
     end
@@ -386,20 +383,15 @@ end
 
 -- Check if the given axis has the largest deviation from center
 function BluetoothController:isDominantAxis(axis_code, deviation)
-    local dominated = true
-
     for code, value in pairs(self.analog_axis_values) do
         if code ~= axis_code then
-            local center = self:getAxisCenter(code)
-            local other_deviation = math.abs(value - center)
+            local other_deviation = math.abs(value - self:getAxisCenter(code))
             if other_deviation > deviation then
-                dominated = false
-                break
+                return false
             end
         end
     end
-
-    return dominated
+    return true
 end
 
 -- =======================================================
@@ -444,7 +436,7 @@ function BluetoothController:addToMainMenu(menu_items)
                         checked_func = function() return self.config.use_analog_mode end,
                         callback = function()
                             self.config.use_analog_mode = true
-                            self.last_analog_direction = {}  -- Reset debounce state
+                            self.analog_triggered = false  -- Reset lock state
                             self:saveSettings()
                         end
                     },
