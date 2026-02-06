@@ -17,6 +17,7 @@ local AXIS_MAX_VALUE = 65535
 
 local BluetoothController = WidgetContainer:extend {
     name = "BluetoothController",
+    is_doc_only = false,  -- Load regardless of whether a document is open
 
     -- State variables for Bluetooth toggle debouncing
     last_action_time = 0,
@@ -53,6 +54,10 @@ local BluetoothController = WidgetContainer:extend {
     analog_axis_values = { [0] = AXIS_CENTER_DEFAULT, [1] = AXIS_CENTER_DEFAULT },  -- Cache current axis values
     analog_triggered = false,  -- Global lock: true = waiting for return to center
     cached_center_deadzone = nil,  -- Cached dead zone value (computed on first use)
+
+    -- Hook management state (KOReader doesn't support unregistering hooks)
+    _hook_registered = false,
+    _hook_active = true,
 }
 
 function BluetoothController:init()
@@ -142,26 +147,27 @@ end
 --  Input Hook Management
 -- =======================================================
 
+-- Register input event hook
+-- Note: KOReader uses function chaining for hooks and doesn't support unregistration.
+-- We use a flag-based approach to control whether our hook is active.
 function BluetoothController:registerInputHook()
-    if Device.input._bt_hook_ref then
-        if Device.input.event_adjust_hooks then
-            for i, hook in ipairs(Device.input.event_adjust_hooks) do
-                if hook == Device.input._bt_hook_ref then
-                    table.remove(Device.input.event_adjust_hooks, i)
-                    logger.warn("BT Plugin: Manual reload detected - Cleaned up old hook")
-                    break
-                end
-            end
-        end
-        Device.input._bt_hook_ref = nil
+    -- Only register once per KOReader session
+    if self._hook_registered then
+        self._hook_active = true  -- Re-activate if previously disabled
+        return
     end
 
+    local controller = self  -- Capture reference for closure
     local hook_func = function(input_instance, ev)
-        self:handleInputEvent(ev)
+        -- Only process events when hook is active
+        if controller._hook_active then
+            controller:handleInputEvent(ev)
+        end
     end
 
     Device.input:registerEventAdjustHook(hook_func)
-    Device.input._bt_hook_ref = hook_func
+    self._hook_registered = true
+    logger.info("BT Plugin: Input hook registered")
 end
 
 -- =======================================================
@@ -286,7 +292,10 @@ function BluetoothController:handleInputEvent(ev)
     end
 
     UIManager:sendEvent(Event:new("GotoViewRel", direction))
-    ev.type = -1  -- Mark event as consumed
+    -- Mark event as consumed by setting type to invalid value.
+    -- This is the standard way to consume events in eventAdjustHook callbacks,
+    -- preventing the event from being processed by other handlers.
+    ev.type = -1
 end
 
 function BluetoothController:parseInputDirection(ev)
