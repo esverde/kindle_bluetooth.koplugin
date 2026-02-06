@@ -38,12 +38,15 @@ local BluetoothController = WidgetContainer:extend {
             [1] = { axis = "Y", low_dir = -1, high_dir = 1 },  -- Y axis: up=prev, down=next
             [0] = { axis = "X", low_dir = 1, high_dir = -1 }   -- X axis: left=next, right=prev
         },
-        analog_threshold = 16384,  -- Dead zone threshold (center is 32768)
+        analog_center = { [0] = 32768, [1] = 32768 },  -- Center value per axis
+        center_deadzone = 0.05,  -- 5% dead zone around center (for stick drift tolerance)
+        analog_threshold = 16384,  -- Trigger threshold from center
     },
     settings_file = DataStorage:getSettingsDir() .. "/bluetooth.lua",
 
-    -- Runtime state for analog mode debouncing
-    last_analog_direction = {},
+    -- Runtime state for analog mode
+    analog_axis_values = { [0] = 32768, [1] = 32768 },  -- Cache current axis values (X, Y)
+    analog_triggered = false,  -- Global lock: true = waiting for return to center
 }
 
 function BluetoothController:init()
@@ -297,32 +300,106 @@ function BluetoothController:parseDpadInput(ev)
 end
 
 -- Parse analog joystick input (codes 0, 1 with values 0-65535)
+-- Uses global lock: must return to center before triggering again
 function BluetoothController:parseAnalogInput(ev)
     local mapping = self.config.analog_map[ev.code]
     if not mapping then return nil end
 
-    local center = 32768
+    local center = self:getAxisCenter(ev.code)
     local threshold = self.config.analog_threshold or 16384
-    local value = ev.value
 
-    -- Determine current direction based on threshold
-    local current_dir = 0
-    if value < (center - threshold) then
-        current_dir = mapping.low_dir
-    elseif value > (center + threshold) then
-        current_dir = mapping.high_dir
+    -- Update cached axis value
+    self.analog_axis_values[ev.code] = ev.value
+
+    -- Check if joystick has returned to center (all axes within dead zone)
+    if self.analog_triggered then
+        if self:isJoystickCentered(threshold) then
+            self.analog_triggered = false  -- Unlock for next movement
+        end
+        -- ALWAYS return nil when we were in triggered state
+        -- This prevents the unlock event from also triggering a new page turn
+        return nil
     end
 
-    -- Debounce: only trigger on direction change
-    local last_dir = self.last_analog_direction[ev.code] or 0
-    self.last_analog_direction[ev.code] = current_dir
+    -- Calculate deviation from center for current axis
+    local current_deviation = math.abs(ev.value - center)
 
-    -- Only return direction when transitioning from center to a direction
-    if current_dir ~= 0 and last_dir == 0 then
-        return current_dir
+    -- Must exceed threshold to trigger
+    if current_deviation <= threshold then
+        return nil  -- Within dead zone
     end
 
-    return nil
+    -- Check if current axis is the dominant one
+    if not self:isDominantAxis(ev.code, current_deviation) then
+        return nil  -- Not dominant, ignore this axis
+    end
+
+    -- Determine direction based on value
+    local direction
+    if ev.value < center then
+        direction = mapping.low_dir
+    else
+        direction = mapping.high_dir
+    end
+
+    -- Lock and trigger
+    self.analog_triggered = true
+    return direction
+end
+
+-- Get center value for an axis (supports per-axis calibration)
+function BluetoothController:getAxisCenter(axis_code)
+    local centers = self.config.analog_center
+    if centers and centers[axis_code] then
+        return centers[axis_code]
+    end
+    return 32768  -- Default center
+end
+
+-- Get center dead zone size (in raw value units)
+function BluetoothController:getCenterDeadzone()
+    local percent = self.config.center_deadzone or 0.05  -- Default 5%
+    return math.floor(65535 * percent)  -- Convert percentage to raw units
+end
+
+-- Check if a value is within the center dead zone
+function BluetoothController:isValueCentered(axis_code, value)
+    local center = self:getAxisCenter(axis_code)
+    local deadzone = self:getCenterDeadzone()
+    return math.abs(value - center) <= deadzone
+end
+
+-- Check if all axes are within the center dead zone (joystick at center)
+function BluetoothController:isJoystickCentered(threshold)
+    local center_deadzone = self:getCenterDeadzone()
+    -- Use the larger of threshold and center_deadzone for return-to-center check
+    local effective_zone = math.max(threshold, center_deadzone)
+
+    for code, value in pairs(self.analog_axis_values) do
+        local center = self:getAxisCenter(code)
+        if math.abs(value - center) > effective_zone then
+            return false
+        end
+    end
+    return true
+end
+
+-- Check if the given axis has the largest deviation from center
+function BluetoothController:isDominantAxis(axis_code, deviation)
+    local dominated = true
+
+    for code, value in pairs(self.analog_axis_values) do
+        if code ~= axis_code then
+            local center = self:getAxisCenter(code)
+            local other_deviation = math.abs(value - center)
+            if other_deviation > deviation then
+                dominated = false
+                break
+            end
+        end
+    end
+
+    return dominated
 end
 
 -- =======================================================
