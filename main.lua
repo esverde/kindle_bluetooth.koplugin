@@ -235,6 +235,7 @@ end
 
 function BluetoothController:getRealState()
     local success, output = pcall(function()
+        -- Query Bluetooth radio state (BTstate: 0=off, >0=on)
         local pipe = io.popen("lipc-get-prop com.lab126.btfd BTstate")
         if not pipe then return nil end
         local result = pipe:read("*all")
@@ -257,12 +258,13 @@ function BluetoothController:getDisplayState()
 end
 
 function BluetoothController:setBluetoothState(enable)
-    local val = enable and 0 or 1
+    local val = enable and 0 or 1  -- BTflightMode: 0 = BT on, 1 = BT off
     local cmd = string.format("lipc-set-prop com.lab126.btfd BTflightMode %d", val)
-    local ok = os.execute(cmd)
+    -- In Lua 5.1, os.execute returns exit status (0 = success), not boolean
+    local exit_code = os.execute(cmd)
 
-    if not ok then
-        logger.warn("BT Plugin: Failed to execute: " .. cmd)
+    if exit_code ~= 0 then
+        logger.warn("BT Plugin: Failed to execute: " .. cmd .. " (exit code: " .. tostring(exit_code) .. ")")
     end
 
     local msg = enable and _("Bluetooth enabled") or _("Bluetooth disabled")
