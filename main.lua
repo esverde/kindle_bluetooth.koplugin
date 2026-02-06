@@ -411,7 +411,7 @@ end
 
 function BluetoothController:addToMainMenu(menu_items)
     menu_items.bluetooth_controller = {
-        text = _("蓝牙翻页器"),
+        text = _("BluetoothController"),
         sorting_hint = "tools",
         sub_item_table = {
             -- 1. Bluetooth toggle
