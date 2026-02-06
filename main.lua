@@ -12,7 +12,7 @@ local C = ffi.C
 
 local BluetoothController = WidgetContainer:extend {
     name = "BluetoothController",
-    
+
     -- 蓝牙开关需要的状态变量
     last_action_time = 0,
     target_state = false,
@@ -21,7 +21,7 @@ local BluetoothController = WidgetContainer:extend {
     config = {
         device_path = "/dev/input/event6",
         invert_layout = false,
-        
+
         -- 按键映射
         key_map = {
             [304] = 1, [307] = 1, [310] = 1,
@@ -38,14 +38,14 @@ local BluetoothController = WidgetContainer:extend {
 
 function BluetoothController:init()
     if not Device:isKindle() then return end
-    
+
     self:loadSettings()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
-    
+
     -- 防止钩子重复叠加
     self:registerInputHook()
-    
+
     -- 启动连接
     self:ensureConnected()
 end
@@ -55,17 +55,23 @@ end
 -- =======================================================
 
 function BluetoothController:loadSettings()
-    local f = io.open(self.settings_file, "r")
-    if f then
-        local c = f:read("*all")
-        f:close()
-        local func = loadstring(c)
-        if func then
-            local u = func()
-            if u then for k,v in pairs(u) do self.config[k] = v end end
-        end
-    else
+    local file = io.open(self.settings_file, "r")
+    if not file then
         self:saveSettings()
+        return
+    end
+
+    local content = file:read("*all")
+    file:close()
+
+    local loader = loadstring(content)
+    if not loader then return end
+
+    local user_config = loader()
+    if not user_config then return end
+
+    for key, value in pairs(user_config) do
+        self.config[key] = value
     end
 end
 
@@ -81,12 +87,12 @@ function BluetoothController:saveSettings()
 
             if type(o) == "table" then
                 local s = "{\n"
-                
+
                 -- 获取所有 Key 并排序
                 local keys = {}
                 for k in pairs(o) do table.insert(keys, k) end
-                table.sort(keys, function(a, b) 
-                    return tostring(a) < tostring(b) 
+                table.sort(keys, function(a, b)
+                    return tostring(a) < tostring(b)
                 end)
 
                 for _, k in ipairs(keys) do
@@ -97,7 +103,7 @@ function BluetoothController:saveSettings()
                     else
                         k_str = "[\"" .. tostring(k) .. "\"]"
                     end
-                    
+
                     s = s .. next_indent .. k_str .. " = " .. serialize(v, level + 1) .. ",\n"
                 end
                 return s .. indent .. "}"
@@ -119,7 +125,6 @@ end
 
 function BluetoothController:registerInputHook()
     if Device.input._bt_hook_ref then
-        -- 针对没有自动清理的情况, 尝试从表中移除
         if Device.input.event_adjust_hooks then
             for i, hook in ipairs(Device.input.event_adjust_hooks) do
                 if hook == Device.input._bt_hook_ref then
@@ -146,50 +151,57 @@ end
 
 function BluetoothController:ensureConnected()
     local input = Device.input
-    local path = self.config.device_path
-    if not input then return end
+    if not input then return false end
 
-    -- 1. 如果已经连接了，直接退出
+    local path = self.config.device_path
+
+    -- Already connected
     if input.opened_devices and input.opened_devices[path] then
         return true
     end
 
-    -- 2. 先检查设备文件是否存在
-    local f = io.open(path, "r")
-    if f then
-        f:close()
-    else
-        -- 文件不存在，说明没开手柄。
+    -- Check if device file exists
+    if not self:deviceExists(path) then
         logger.info("BT Plugin: Device " .. path .. " not found (Controller off?)")
         return false
     end
 
-    -- 3. 只有确认文件存在，才尝试从内核挂载
+    -- Attempt connection
     logger.warn("BT Plugin: Found device, connecting to " .. path)
-    local ok, err = pcall(function() input:open(path) end)
-    
-    if not ok then
-        -- 只有当文件存在却打不开时，才打印报错
+    local success, err = pcall(function() input:open(path) end)
+
+    if not success then
         logger.warn("BT Plugin: Failed to open -> " .. tostring(err))
     end
-    
-    return ok
+
+    return success
+end
+
+function BluetoothController:deviceExists(path)
+    local file = io.open(path, "r")
+    if file then
+        file:close()
+        return true
+    end
+    return false
 end
 
 function BluetoothController:reloadDevice()
     local input = Device.input
+    if not input then return false end
+
     local path = self.config.device_path
-    if not input then return end
-    
+
+    -- Close existing connection if open
     if input.opened_devices and input.opened_devices[path] then
         logger.warn("BT Plugin: Reload - Closing old connection " .. path)
         pcall(function() input:close(path) end)
     end
-    
+
+    -- Reopen device
     logger.warn("BT Plugin: Reload - Re-opening " .. path)
-    local ok, err = pcall(function() input:open(path) end)
-    
-    return ok
+    local success = pcall(function() input:open(path) end)
+    return success
 end
 
 -- =======================================================
@@ -197,16 +209,26 @@ end
 -- =======================================================
 
 function BluetoothController:getRealState()
-    local status, result = pcall(function()
-        local f = io.popen("lipc-get-prop com.lab126.btfd BTstate")
-        if not f then return nil end
-        local content = f:read("*all")
-        f:close()
-        return content
+    local success, output = pcall(function()
+        local pipe = io.popen("lipc-get-prop com.lab126.btfd BTstate")
+        if not pipe then return nil end
+        local result = pipe:read("*all")
+        pipe:close()
+        return result
     end)
-    if not status or not result then return false end
-    local state = tonumber(result) or 0
-    return state > 0
+
+    if not success or not output then return false end
+
+    return (tonumber(output) or 0) > 0
+end
+
+-- Returns cached state if within debounce window, otherwise queries hardware
+function BluetoothController:getDisplayState()
+    local elapsed = os.time() - self.last_action_time
+    if elapsed < 2 then
+        return self.target_state
+    end
+    return self:getRealState()
 end
 
 function BluetoothController:setBluetoothState(enable)
@@ -230,32 +252,31 @@ end
 -- =======================================================
 
 function BluetoothController:handleInputEvent(ev)
-    local dir = nil
+    local direction = self:parseInputDirection(ev)
+    if not direction then return end
 
-    if ev.type == C.EV_KEY then
-        if ev.value == 1 or ev.value == 2 then
-            local action = self.config.key_map[ev.code]
-            if action then dir = action end
-        end
-    elseif ev.type == C.EV_ABS then
-        if ev.value ~= 0 then
-            local axis_map = self.config.joy_map[ev.code]
-            if axis_map then
-                local action = axis_map[ev.value]
-                if action then dir = action end
-            end
-        end
+    -- Apply inversion if configured
+    if self.config.invert_layout then
+        direction = -direction
     end
 
-    if dir then
-        -- 反转逻辑
-        if self.config.invert_layout then
-            dir = -dir
-        end
-        
-        UIManager:sendEvent(Event:new("GotoViewRel", dir))
-        ev.type = -1
+    UIManager:sendEvent(Event:new("GotoViewRel", direction))
+    ev.type = -1  -- Mark event as consumed
+end
+
+function BluetoothController:parseInputDirection(ev)
+    -- Handle key press events
+    if ev.type == C.EV_KEY and (ev.value == 1 or ev.value == 2) then
+        return self.config.key_map[ev.code]
     end
+
+    -- Handle joystick/axis events
+    if ev.type == C.EV_ABS and ev.value ~= 0 then
+        local axis_map = self.config.joy_map[ev.code]
+        return axis_map and axis_map[ev.value]
+    end
+
+    return nil
 end
 
 -- =======================================================
@@ -267,22 +288,17 @@ function BluetoothController:addToMainMenu(menu_items)
         text = _("蓝牙翻页器"),
         sorting_hint = "tools",
         sub_item_table = {
-            -- 1. 蓝牙开关
+            -- 1. Bluetooth toggle
             {
                 text = _("Toggle Bluetooth"),
                 keep_menu_open = true,
                 checked_func = function()
-                    local now = os.time()
-                    if (now - self.last_action_time) < 2 then return self.target_state
-                    else return self:getRealState() end
+                    return self:getDisplayState()
                 end,
                 callback = function(touchmenu_instance)
-                    local now = os.time()
-                    local next_state
-                    if (now - self.last_action_time) < 2 then next_state = not self.target_state
-                    else next_state = not self:getRealState() end
+                    local next_state = not self:getDisplayState()
                     self.target_state = next_state
-                    self.last_action_time = now
+                    self.last_action_time = os.time()
                     touchmenu_instance:updateItems()
                     self:setBluetoothState(next_state)
                 end,
