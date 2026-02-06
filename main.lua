@@ -190,6 +190,10 @@ function BluetoothController:ensureConnected()
         return false
     end
 
+    -- Reset shared state on new connection (prevents stale axis values)
+    _shared_axis_values = {}
+    _shared_triggered = false
+
     -- Attempt connection
     logger.info("BT Plugin: Found device, connecting to " .. path)
     local success, err = pcall(function() input:open(path) end)
@@ -221,6 +225,10 @@ function BluetoothController:reloadDevice()
         logger.warn("BT Plugin: Reload - Closing old connection " .. path)
         pcall(function() input:close(path) end)
     end
+
+    -- Reset shared state on reload (prevents stale axis values)
+    _shared_axis_values = {}
+    _shared_triggered = false
 
     -- Reopen device
     logger.warn("BT Plugin: Reload - Re-opening " .. path)
@@ -363,11 +371,14 @@ function BluetoothController:parseAnalogInput(ev)
         if _shared_triggered then
             local all_centered = true
             for axis_code, axis_deviation in pairs(_shared_axis_values) do
-                if axis_deviation > threshold then
-                    all_centered = false
-                    logger.info(string.format("BT DEBUG: Axis %d still extended (deviation=%d), not resetting",
-                        axis_code, axis_deviation))
-                    break
+                -- Only consider axes that are mapped in the current config
+                if self.config.analog_map[axis_code] then
+                    if axis_deviation > threshold then
+                        all_centered = false
+                        logger.info(string.format("BT DEBUG: Axis %d still extended (deviation=%d), not resetting",
+                            axis_code, axis_deviation))
+                        break
+                    end
                 end
             end
             if all_centered then
