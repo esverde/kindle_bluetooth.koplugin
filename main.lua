@@ -13,21 +13,21 @@ local C = ffi.C
 local BluetoothController = WidgetContainer:extend {
     name = "BluetoothController",
 
-    -- 蓝牙开关需要的状态变量
+    -- State variables for Bluetooth toggle debouncing
     last_action_time = 0,
     target_state = false,
 
-    -- 默认配置
+    -- Default configuration
     config = {
         device_path = "/dev/input/event6",
         invert_layout = false,
 
-        -- 按键映射
+        -- Key code mappings: positive = next page, negative = prev page
         key_map = {
             [304] = 1, [307] = 1, [310] = 1,
             [305] = -1, [308] = -1, [311] = -1,
         },
-        -- 摇杆映射
+        -- Joystick axis mappings
         joy_map = {
             [17] = { [1] = 1, [-1] = -1 },
             [16] = { [-1] = 1, [1] = -1 }
@@ -43,15 +43,15 @@ function BluetoothController:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
 
-    -- 防止钩子重复叠加
+    -- Prevent duplicate hook registration on reload
     self:registerInputHook()
 
-    -- 启动连接
+    -- Attempt initial device connection
     self:ensureConnected()
 end
 
 -- =======================================================
---  配置加载与保存
+--  Settings Management
 -- =======================================================
 
 function BluetoothController:loadSettings()
@@ -75,52 +75,49 @@ function BluetoothController:loadSettings()
     end
 end
 
--- 支持缩进和排序的保存函数
+-- Serializes config to file with indentation and sorted keys
 function BluetoothController:saveSettings()
-    local f = io.open(self.settings_file, "w")
-    if f then
-        -- 递归序列化函数，带缩进层级
-        local function serialize(o, level)
-            level = level or 0
-            local indent = string.rep("    ", level)
-            local next_indent = string.rep("    ", level + 1)
+    local file = io.open(self.settings_file, "w")
+    if not file then return end
 
-            if type(o) == "table" then
-                local s = "{\n"
+    -- Recursive serializer with indentation
+    local function serialize(obj, level)
+        level = level or 0
+        local indent = string.rep("    ", level)
+        local next_indent = string.rep("    ", level + 1)
 
-                -- 获取所有 Key 并排序
-                local keys = {}
-                for k in pairs(o) do table.insert(keys, k) end
-                table.sort(keys, function(a, b)
-                    return tostring(a) < tostring(b)
-                end)
+        if type(obj) == "table" then
+            local result = "{\n"
 
-                for _, k in ipairs(keys) do
-                    local v = o[k]
-                    local k_str
-                    if type(k) == "number" then
-                        k_str = "[" .. k .. "]"
-                    else
-                        k_str = "[\"" .. tostring(k) .. "\"]"
-                    end
+            -- Collect and sort keys
+            local keys = {}
+            for k in pairs(obj) do table.insert(keys, k) end
+            table.sort(keys, function(a, b)
+                return tostring(a) < tostring(b)
+            end)
 
-                    s = s .. next_indent .. k_str .. " = " .. serialize(v, level + 1) .. ",\n"
-                end
-                return s .. indent .. "}"
-            elseif type(o) == "string" then
-                return string.format("%q", o)
-            else
-                return tostring(o)
+            for _, k in ipairs(keys) do
+                local v = obj[k]
+                local key_str = type(k) == "number"
+                    and "[" .. k .. "]"
+                    or "[\"" .. tostring(k) .. "\"]"
+
+                result = result .. next_indent .. key_str .. " = " .. serialize(v, level + 1) .. ",\n"
             end
+            return result .. indent .. "}"
+        elseif type(obj) == "string" then
+            return string.format("%q", obj)
+        else
+            return tostring(obj)
         end
-
-        f:write("return " .. serialize(self.config))
-        f:close()
     end
+
+    file:write("return " .. serialize(self.config))
+    file:close()
 end
 
 -- =======================================================
---  钩子管理逻辑
+--  Input Hook Management
 -- =======================================================
 
 function BluetoothController:registerInputHook()
@@ -146,7 +143,7 @@ function BluetoothController:registerInputHook()
 end
 
 -- =======================================================
---  连接管理逻辑
+--  Device Connection Management
 -- =======================================================
 
 function BluetoothController:ensureConnected()
@@ -205,7 +202,7 @@ function BluetoothController:reloadDevice()
 end
 
 -- =======================================================
---  硬件状态逻辑
+--  Hardware State Management
 -- =======================================================
 
 function BluetoothController:getRealState()
@@ -248,7 +245,7 @@ function BluetoothController:onDispatcherRegisterActions()
 end
 
 -- =======================================================
---  输入处理逻辑
+--  Input Event Processing
 -- =======================================================
 
 function BluetoothController:handleInputEvent(ev)
@@ -280,7 +277,7 @@ function BluetoothController:parseInputDirection(ev)
 end
 
 -- =======================================================
---  菜单界面
+--  Menu Interface
 -- =======================================================
 
 function BluetoothController:addToMainMenu(menu_items)
@@ -303,7 +300,7 @@ function BluetoothController:addToMainMenu(menu_items)
                     self:setBluetoothState(next_state)
                 end,
             },
-            -- 2. 颠倒方向
+            -- 2. Invert direction
             {
                 text = _("Invert Direction"),
                 checked_func = function() return self.config.invert_layout end,
@@ -312,7 +309,7 @@ function BluetoothController:addToMainMenu(menu_items)
                     self:saveSettings()
                 end
             },
-            -- 3. 重载设备
+            -- 3. Reload device
             {
                 text = _("Reload Device"),
                 callback = function()
