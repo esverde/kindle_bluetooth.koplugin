@@ -538,10 +538,9 @@ function BluetoothController:addToMainMenu(menu_items)
                 callback = function()
                     local devices = self:scanJoystickDevices()
                     local current_device = self.config.device_path
-
-                    local msg = _("Detected JOYSTICK Devices:\n\n")
+                    local msg = ""
                     if #devices == 0 then
-                        msg = msg .. _("No JOYSTICK devices found")
+                        msg = _("No JOYSTICK devices found")
                     else
                         for _, dev in ipairs(devices) do
                             local status = ""
@@ -550,7 +549,7 @@ function BluetoothController:addToMainMenu(menu_items)
                             else
                                 status = dev.connected and "[CONNECTED]" or "[AVAILABLE]"
                             end
-                            msg = msg .. string.format("%s %s\n%s\n\n", status, dev.name, dev.path)
+                            msg = msg .. string.format("%s %s", status, dev.name)
                         end
                     end
 
@@ -626,7 +625,7 @@ function BluetoothController:addToMainMenu(menu_items)
                 end,
                 sub_item_table = {
                     {
-                        text = _("Analog Joystick"),
+                        text = _("Analog"),
                         checked_func = function() return self.config.use_analog_mode end,
                         callback = function()
                             self.config.use_analog_mode = true
@@ -670,7 +669,6 @@ function BluetoothController:addToMainMenu(menu_items)
                     local current_delay = self.wakeup_delay or 3
                     UIManager:show(SpinWidget:new{
                         title_text = _("Set Wakeup Delay (seconds)"),
-                        info_text = _("Delay before reconnecting controller after wakeup"),
                         value = current_delay,
                         value_min = 1,
                         value_max = 10,
