@@ -335,38 +335,69 @@ function BluetoothController:scanJoystickDevices()
     local devices = {}
     local input = Device.input
 
-    if not input then
-        logger.warn("BT Plugin: Device.input not available")
+    if not input or not input.opened_devices then
+        logger.warn("BT Plugin: Device.input or opened_devices not available")
         return devices
     end
 
-    -- KOReader's input system stores device info in dev_mod table
-    -- Each entry contains device capabilities (e.g., "JOYSTICK", "KEY", etc.)
-    if input.dev_mod then
-        for dev_path, dev_info in pairs(input.dev_mod) do
-            -- Check if device has JOYSTICK capability
-            if dev_info and type(dev_info) == "table" then
-                local is_joystick = false
-                local device_name = dev_info.name or "Unknown Device"
+    -- Check opened_devices for joystick devices
+    for dev_path, _ in pairs(input.opened_devices) do
+        local event_num = dev_path:match("/dev/input/event(%d+)")
+        if event_num then
+            -- Read device name from sysfs
+            local sys_name_path = "/sys/class/input/event" .. event_num .. "/device/name"
+            local name_file = io.open(sys_name_path, "r")
+            local device_name = "Unknown Device"
 
-                -- dev_info contains capability flags like isJoystick, isKeyboard, etc.
-                if dev_info.isJoystick then
+            if name_file then
+                device_name = name_file:read("*line") or device_name
+                name_file:close()
+            end
+
+            -- Check if this is a joystick device
+            local is_joystick = false
+
+            -- Method 1: Match against configured profiles
+            if self.full_config and self.full_config.profiles then
+                for _, profile in pairs(self.full_config.profiles) do
+                    if profile.device_path == dev_path then
+                        is_joystick = true
+                        device_name = profile.name or device_name
+                        break
+                    end
+                end
+            end
+
+            -- Method 2: Match by device name patterns (fallback)
+            if not is_joystick then
+                if device_name:match("Controller") or device_name:match("Gamepad") or
+                   device_name:match("Joystick") or device_name:match("Xbox") or
+                   device_name:match("PlayStation") then
                     is_joystick = true
                 end
+            end
 
-                if is_joystick then
-                    table.insert(devices, {
-                        path = dev_path,
-                        name = device_name,
-                        connected = true
-                    })
-                    logger.info("BT Plugin: Found JOYSTICK device: " .. device_name .. " at " .. dev_path)
-                end
+            if is_joystick then
+                table.insert(devices, {
+                    path = dev_path,
+                    name = device_name,
+                    connected = true
+                })
+                logger.info("BT Plugin: Found JOYSTICK device: " .. device_name .. " at " .. dev_path)
             end
         end
     end
 
     return devices
+end
+
+-- Check if a device is currently opened
+function BluetoothController:isDeviceOpened(path)
+    local input = Device.input
+    if input and input.opened_devices then
+        return input.opened_devices[path] ~= nil
+    end
+    return false
 end
 
 -- =======================================================
@@ -586,7 +617,12 @@ function BluetoothController:addToMainMenu(menu_items)
                         msg = msg .. _("No JOYSTICK devices found")
                     else
                         for _, dev in ipairs(devices) do
-                            local status = (dev.path == current_device) and "[ACTIVE]" or ""
+                            local status = ""
+                            if dev.path == current_device then
+                                status = dev.connected and "[ACTIVE]" or "[CONFIGURED]"
+                            else
+                                status = dev.connected and "[CONNECTED]" or "[AVAILABLE]"
+                            end
                             msg = msg .. string.format("%s %s\n%s\n\n", status, dev.name, dev.path)
                         end
                     end
