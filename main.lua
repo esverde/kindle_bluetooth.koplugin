@@ -11,11 +11,6 @@ local _ = require("gettext")
 local ffi = require("ffi")
 local C = ffi.C
 
--- Constants
-local AXIS_CENTER_DEFAULT = 32768
-local AXIS_THRESHOLD_DEFAULT = 16384
-local AXIS_MAX_VALUE = 65535
-local TRIGGER_COOLDOWN_MS = 500
 
 -- MODULE-LEVEL shared state (persists across all instances)
 -- This is critical because KOReader may create multiple plugin instances
@@ -32,30 +27,8 @@ local BluetoothController = WidgetContainer:extend {
     last_action_time = 0,
     target_state = false,
 
-    -- Default configuration
-    config = {
-        device_path = "/dev/input/event6",
-        invert_layout = false,
-        use_analog_mode = true,  -- true = analog joystick, false = d-pad mode
-
-        -- Key code mappings: positive = next page, negative = prev page
-        key_map = {
-            [304] = 1, [307] = 1, [310] = 1,
-            [305] = -1, [308] = -1, [311] = -1,
-        },
-        -- D-pad mode: discrete axis values (codes 16=X, 17=Y)
-        dpad_map = {
-            [17] = { [1] = 1, [-1] = -1 },
-            [16] = { [-1] = 1, [1] = -1 }
-        },
-        -- Analog mode: continuous axis values 0-65535 (codes 0=X, 1=Y)
-        analog_map = {
-            [1] = { axis = "Y", low_dir = -1, high_dir = 1 },  -- Y axis: up=prev, down=next
-            [0] = { axis = "X", low_dir = 1, high_dir = -1 }   -- X axis: left=next, right=prev
-        },
-        analog_center = { [0] = AXIS_CENTER_DEFAULT, [1] = AXIS_CENTER_DEFAULT },  -- Center value per axis
-        analog_threshold = AXIS_THRESHOLD_DEFAULT,  -- Trigger threshold from center
-    },
+    -- Configuration loaded from bluetooth.lua
+    config = {},
     settings_file = nil,  -- Dynamically set in getPluginDir()
 
     -- Hook activity state (per-instance, allows disabling without unregistering)
@@ -133,20 +106,13 @@ function BluetoothController:loadSettings()
         self.config.key_map = profile.key_map
         self.config.dpad_map = profile.dpad_map
         self.config.analog_map = profile.analog_map
-
-        -- Set analog center values per axis
-        if profile.analog_center then
-            self.config.analog_center = profile.analog_center
-        else
-            local center = profile.axis_center or AXIS_CENTER_DEFAULT
-            self.config.analog_center = { [0] = center, [1] = center }
-        end
-
-        self.config.analog_threshold = profile.axis_threshold or AXIS_THRESHOLD_DEFAULT
+        self.config.analog_center = profile.analog_center
+        self.config.analog_threshold = profile.axis_threshold
 
         logger.info("BT Plugin: Loaded profile '" .. (profile.name or self.active_profile) .. "'")
     else
-        logger.warn("BT Plugin: Profile '" .. tostring(self.active_profile) .. "' not found")
+        logger.warn("BT Plugin: Profile '" .. tostring(self.active_profile) .. "' not found in bluetooth.lua")
+        logger.warn("BT Plugin: Please ensure bluetooth.lua exists and contains valid profile configuration")
     end
 
     -- Store full config for menu access
@@ -198,47 +164,6 @@ function BluetoothController:saveFullConfig()
     file:write("return " .. serialize(self.full_config))
     file:close()
     logger.info("BT Plugin: Configuration saved")
-end
-
--- Serializes config to file with indentation and sorted keys
-function BluetoothController:saveSettings()
-    local file = io.open(self.settings_file, "w")
-    if not file then return end
-
-    -- Recursive serializer with indentation
-    local function serialize(obj, level)
-        level = level or 0
-        local indent = string.rep("    ", level)
-        local next_indent = string.rep("    ", level + 1)
-
-        if type(obj) == "table" then
-            local result = "{\n"
-
-            -- Collect and sort keys
-            local keys = {}
-            for k in pairs(obj) do table.insert(keys, k) end
-            table.sort(keys, function(a, b)
-                return tostring(a) < tostring(b)
-            end)
-
-            for _, k in ipairs(keys) do
-                local v = obj[k]
-                local key_str = type(k) == "number"
-                    and "[" .. k .. "]"
-                    or "[\"" .. tostring(k) .. "\"]"
-
-                result = result .. next_indent .. key_str .. " = " .. serialize(v, level + 1) .. ",\n"
-            end
-            return result .. indent .. "}"
-        elseif type(obj) == "string" then
-            return string.format("%q", obj)
-        else
-            return tostring(obj)
-        end
-    end
-
-    file:write("return " .. serialize(self.config))
-    file:close()
 end
 
 -- =======================================================

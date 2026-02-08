@@ -51,7 +51,7 @@ return {
         -- Bluetooth HID 手柄配置 (黑鲨左手柄等)
         ["bluetooth_hid"] = {
             name = "Bluetooth HID",                -- 显示名称
-            device_path = "/dev/input/event3",     -- 设备路径
+            device_path = "/dev/input/event6",     -- 设备路径
             supports_dpad = false,                 -- 不支持 D-Pad 模式，仅模拟摇杆
             use_analog_mode = true,                -- 固定为模拟摇杆模式
 
