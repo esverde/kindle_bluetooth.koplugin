@@ -253,6 +253,12 @@ function BluetoothController:reloadDevice()
     _shared_triggered = false
 
     local success = pcall(function() input:open(path) end)
+
+    -- Auto cleanup dump files after successful reload
+    if success then
+        self:cleanupBluetoothDumps()
+    end
+
     return success
 end
 
@@ -506,6 +512,69 @@ function BluetoothController:getAxisCenter(axis_code)
     return AXIS_CENTER_DEFAULT
 end
 
+
+-- =======================================================
+--  Bluetooth Dump File Cleanup
+-- =======================================================
+
+-- Clean up Bluetooth-related dump files
+function BluetoothController:cleanupBluetoothDumps()
+    local total_deleted = 0
+
+    -- Define cleanup targets with safe, specific patterns
+    local cleanup_paths = {
+        {
+            dir = "/mnt/us",
+            patterns = {
+                "audiomgrd_*.core",
+                "btmanagerd_*.core",
+                "Indexer_Dump_*.txt"
+            }
+        },
+        {
+            dir = "/mnt/us/documents",
+            patterns = {
+                "audiomgrd_*_crash_*.tgz",
+                "audiomgrd_*_crash_*.txt",
+                "btmanagerd_*_crash_*.tgz",
+                "btmanagerd_*_crash_*.txt",
+                "audiomgrd_*_crash_*.sdr",
+                "btmanagerd_*_crash_*.sdr"
+            }
+        }
+    }
+
+    -- Clean up files matching patterns
+    for _, path_config in ipairs(cleanup_paths) do
+        local dir = path_config.dir
+        for _, pattern in ipairs(path_config.patterns) do
+            -- Use find command to locate and count matching files
+            local find_cmd = string.format("find '%s' -maxdepth 1 -name '%s' 2>/dev/null", dir, pattern)
+            local pipe = io.popen(find_cmd)
+            if pipe then
+                local files = {}
+                for file in pipe:lines() do
+                    table.insert(files, file)
+                end
+                pipe:close()
+
+                -- Delete each file/directory
+                for _, file in ipairs(files) do
+                    local rm_cmd = string.format("rm -rf '%s' 2>/dev/null", file)
+                    local success = os.execute(rm_cmd)
+                    if success == 0 or success == true then
+                        total_deleted = total_deleted + 1
+                        logger.info("BT Plugin: Deleted dump file: " .. file)
+                    end
+                end
+            end
+        end
+    end
+
+    logger.info("BT Plugin: Cleanup completed, deleted " .. total_deleted .. " files/folders")
+    return total_deleted
+end
+
 -- =======================================================
 --  Menu Interface
 -- =======================================================
@@ -702,6 +771,18 @@ function BluetoothController:addToMainMenu(menu_items)
                     else
                         UIManager:show(InfoMessage:new{ text = _("加载失败"), timeout = 2 })
                     end
+                end
+            },
+
+            -- 8. Clean up Bluetooth dump files
+            {
+                text = _("清理蓝牙垃圾"),
+                callback = function()
+                    local count = self:cleanupBluetoothDumps()
+                    UIManager:show(InfoMessage:new{
+                        text = string.format(_("已清理 %d 个文件"), count),
+                        timeout = 2
+                    })
                 end
             }
         }
