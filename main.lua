@@ -91,6 +91,7 @@ function BluetoothController:loadSettings()
     -- Load common settings
     if full_config.common then
         self.wakeup_delay = full_config.common.wakeup_delay or 3
+        self.trigger_cooldown_ms = full_config.common.trigger_cooldown_ms or 500
         self.config.invert_layout = full_config.common.invert_layout or false
         self.active_profile = full_config.common.active_profile or "xbox_wireless_controller"
     end
@@ -287,7 +288,7 @@ function BluetoothController:scanJoystickDevices()
                 for _, profile in pairs(self.full_config.profiles) do
                     if profile.device_path == dev_path then
                         is_joystick = true
-                        device_name = profile.name or device_name
+                        -- Don't override device_name - use actual name from sysfs
                         break
                     end
                 end
@@ -305,7 +306,7 @@ function BluetoothController:scanJoystickDevices()
             if is_joystick then
                 table.insert(devices, {
                     path = dev_path,
-                    name = device_name,
+                    name = device_name,  -- Always use actual device name from sysfs
                     connected = true
                 })
                 logger.info("BT Plugin: Found JOYSTICK device: " .. device_name .. " at " .. dev_path)
@@ -479,7 +480,8 @@ function BluetoothController:parseAnalogInput(ev)
 
     if _shared_last_trigger_time then
         local last_ms = time.to_ms(_shared_last_trigger_time)
-        if (now_ms - last_ms) < TRIGGER_COOLDOWN_MS then
+        local cooldown_ms = (self.trigger_cooldown_ms or 500)  -- Default 500ms if not configured
+        if (now_ms - last_ms) < cooldown_ms then
             return nil
         end
     end
