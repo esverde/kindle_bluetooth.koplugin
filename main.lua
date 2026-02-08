@@ -512,12 +512,12 @@ end
 
 function BluetoothController:addToMainMenu(menu_items)
     menu_items.bluetooth_controller = {
-        text = _("BluetoothController"),
+        text = _("蓝牙翻页器"),
         sorting_hint = "tools",
         sub_item_table = {
             -- 1. Bluetooth toggle
             {
-                text = _("Toggle Bluetooth"),
+                text = _("蓝牙开关"),
                 keep_menu_open = true,
                 checked_func = function()
                     return self:getDisplayState()
@@ -533,33 +533,33 @@ function BluetoothController:addToMainMenu(menu_items)
 
             -- 2. Connected Devices
             {
-                text = _("Connected Devices"),
+                text = _("已连接设备"),
                 keep_menu_open = true,
                 callback = function()
                     local devices = self:scanJoystickDevices()
                     local current_device = self.config.device_path
                     local msg = ""
                     if #devices == 0 then
-                        msg = _("No JOYSTICK devices found")
+                        msg = _("未找到手柄设备")
                     else
                         for _, dev in ipairs(devices) do
                             local status = ""
                             if dev.path == current_device then
-                                status = dev.connected and "[ACTIVE]" or "[CONFIGURED]"
+                                status = dev.connected and "[当前]" or "[已配置]"
                             else
-                                status = dev.connected and "[CONNECTED]" or "[AVAILABLE]"
+                                status = dev.connected and "[已连接]" or "[可用]"
                             end
                             msg = msg .. string.format("%s %s", status, dev.name)
                         end
                     end
 
-                    UIManager:show(InfoMessage:new{ text = msg, timeout = 5 })
+                    UIManager:show(InfoMessage:new{ text = msg, timeout = 2 })
                 end,
             },
 
             -- 3. Switch Profile
             {
-                text = _("Switch Profile"),
+                text = _("切换配置"),
                 keep_menu_open = true,
                 sub_item_table_func = function()
                     local profiles = {}
@@ -585,12 +585,12 @@ function BluetoothController:addToMainMenu(menu_items)
                                     self:loadSettings()
                                     if self:reloadDevice() then
                                         UIManager:show(InfoMessage:new{
-                                            text = _("Switched to ") .. (profile.name or profile_id),
+                                            text = _("已切换到 ") .. (profile.name or profile_id),
                                             timeout = 2
                                         })
                                     else
                                         UIManager:show(InfoMessage:new{
-                                            text = _("Profile switched, but device not found"),
+                                            text = _("配置已切换，但未找到设备"),
                                             timeout = 2
                                         })
                                     end
@@ -605,7 +605,7 @@ function BluetoothController:addToMainMenu(menu_items)
 
             -- 4. Invert direction
             {
-                text = _("Invert Direction"),
+                text = _("反转方向"),
                 checked_func = function() return self.config.invert_layout end,
                 callback = function()
                     self.config.invert_layout = not self.config.invert_layout
@@ -619,13 +619,13 @@ function BluetoothController:addToMainMenu(menu_items)
             },
             -- 5. Joystick Mode (only show if controller supports D-Pad)
             {
-                text = _("Joystick Mode"),
+                text = _("摇杆模式"),
                 enabled_func = function()
                     return self.config.supports_dpad == true
                 end,
                 sub_item_table = {
                     {
-                        text = _("Analog"),
+                        text = _("模拟摇杆"),
                         checked_func = function() return self.config.use_analog_mode end,
                         callback = function()
                             self.config.use_analog_mode = true
@@ -642,7 +642,7 @@ function BluetoothController:addToMainMenu(menu_items)
                         end
                     },
                     {
-                        text = _("D-Pad"),
+                        text = _("方向键"),
                         checked_func = function() return not self.config.use_analog_mode end,
                         callback = function()
                             self.config.use_analog_mode = false
@@ -662,19 +662,19 @@ function BluetoothController:addToMainMenu(menu_items)
 
             -- 6. Wakeup Delay
             {
-                text = _("Wakeup Delay"),
+                text = _("唤醒延迟"),
                 keep_menu_open = true,
                 callback = function()
                     local SpinWidget = require("ui/widget/spinwidget")
                     local current_delay = self.wakeup_delay or 3
                     UIManager:show(SpinWidget:new{
-                        title_text = _("Set Wakeup Delay (seconds)"),
+                        title_text = _("设置唤醒延迟（秒）"),
                         value = current_delay,
                         value_min = 1,
                         value_max = 10,
                         value_step = 1,
                         value_hold_step = 2,
-                        ok_text = _("Set"),
+                        ok_text = _("确定"),
                         callback = function(spin)
                             self.wakeup_delay = spin.value
 
@@ -685,7 +685,7 @@ function BluetoothController:addToMainMenu(menu_items)
                             end
 
                             UIManager:show(InfoMessage:new{
-                                text = _("Wakeup delay set to ") .. spin.value .. _(" seconds"),
+                                text = _("唤醒延迟已设置为 ") .. spin.value .. _(" 秒"),
                                 timeout = 2
                             })
                         end
@@ -694,13 +694,13 @@ function BluetoothController:addToMainMenu(menu_items)
             },
             -- 7. Reload device
             {
-                text = _("Reload Device"),
+                text = _("重新加载设备"),
                 callback = function()
                     self:loadSettings()
                     if self:reloadDevice() then
-                        UIManager:show(InfoMessage:new{ text = _("Device loaded"), timeout = 2 })
+                        UIManager:show(InfoMessage:new{ text = _("设备已加载"), timeout = 2 })
                     else
-                        UIManager:show(InfoMessage:new{ text = _("Failed to load"), timeout = 2 })
+                        UIManager:show(InfoMessage:new{ text = _("加载失败"), timeout = 2 })
                     end
                 end
             }
