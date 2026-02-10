@@ -20,6 +20,7 @@ return {
         -- Xbox Wireless Controller 配置
         ["xbox_wireless_controller"] = {
             name = "Xbox Wireless Controller",     -- 显示名称
+            protocol = "classic",                  -- 协议类型: classic (默认)
             device_path = "/dev/input/event6",     -- 设备路径
             supports_dpad = true,                  -- 支持 D-Pad 模式切换
             use_analog_mode = true,                -- 当前使用模式 (true=模拟摇杆, false=D-Pad)
@@ -52,7 +53,11 @@ return {
         -- Bluetooth HID 手柄配置 (黑鲨左手柄等)
         ["bluetooth_hid"] = {
             name = "Bluetooth HID",                -- 显示名称
-            device_path = "/dev/input/event6",     -- 设备路径
+            protocol = "ble",                      -- 协议类型: ble
+            mac_address = "04:33:85:2C:BF:5B",     -- BLE MAC 地址 (请修改此处)
+            -- service_uuid = "1812",              -- 可选: HID Service
+            -- report_uuid = "2a4d",               -- 可选: Report Characteristic
+            device_path = "/dev/input/event6",     -- (仅作兼容保留)
             supports_dpad = false,                 -- 不支持 D-Pad 模式，仅模拟摇杆
             use_analog_mode = true,                -- 固定为模拟摇杆模式
 

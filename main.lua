@@ -9,7 +9,29 @@ local DataStorage = require("datastorage")
 local time = require("ui/time")
 local _ = require("gettext")
 local ffi = require("ffi")
+local ffi = require("ffi")
+
+-- Add plugin directory to package.path to ensure we can require 'ble.manager'
+local function setup_plugin_path()
+    local info = debug.getinfo(1, "S")
+    local source = info.source
+    -- Handle @/path/to/script.lua structure
+    local base_dir = source:match("@(.*/)")
+    if base_dir then
+        package.path = base_dir .. "?.lua;" .. package.path
+    end
+end
+setup_plugin_path()
+
 local C = ffi.C
+local BLEManager = nil
+-- Use pcall to load BLE manager so failure doesn't crash the whole plugin
+local status, valid_manager_or_err = pcall(require, "ble.manager")
+if status and valid_manager_or_err then
+    BLEManager = valid_manager_or_err
+else
+    logger.warn("BT Plugin: Failed to load ble.manager: " .. tostring(valid_manager_or_err))
+end
 
 
 -- MODULE-LEVEL shared state (persists across all instances)
@@ -50,6 +72,11 @@ function BluetoothController:init()
 
     -- Attempt initial device connection
     self:ensureConnected()
+
+    -- Initialize BLE Manager if available
+    if BLEManager then
+        BLEManager:init(function(data) self:handleBLEInput(data) end)
+    end
 end
 
 -- =======================================================
@@ -108,7 +135,11 @@ function BluetoothController:loadSettings()
         self.config.dpad_map = profile.dpad_map
         self.config.analog_map = profile.analog_map
         self.config.analog_center = profile.analog_center
+        self.config.analog_map = profile.analog_map
+        self.config.analog_center = profile.analog_center
         self.config.analog_threshold = profile.axis_threshold
+        self.config.protocol = profile.protocol or "classic"
+        self.config.mac_address = profile.mac_address
 
         logger.info("BT Plugin: Loaded profile '" .. (profile.name or self.active_profile) .. "'")
     else
@@ -198,6 +229,17 @@ end
 -- =======================================================
 
 function BluetoothController:ensureConnected()
+    -- Branch logic based on protocol
+    if self.config.protocol == "ble" then
+        if BLEManager then
+             return BLEManager:connect(self.config.mac_address)
+        else
+             logger.warn("BT Plugin: BLE Manager not loaded")
+             return false
+        end
+    end
+
+    -- Classic Logic
     local input = Device.input
     if not input then return false end
 
@@ -237,6 +279,13 @@ function BluetoothController:deviceExists(path)
 end
 
 function BluetoothController:reloadDevice()
+    if self.config.protocol == "ble" then
+         if BLEManager then
+             return BLEManager:connect(self.config.mac_address)
+         end
+         return false
+    end
+
     local input = Device.input
     if not input then return false end
 
@@ -436,6 +485,33 @@ function BluetoothController:parseInputDirection(ev)
     end
 
     return nil
+end
+
+-- =======================================================
+--  BLE Handling
+-- =======================================================
+
+function BluetoothController:handleBLEInput(data)
+    if not data or #data < 2 then return end
+
+    -- Assuming Standard Gamepad Report: [LeftX, LeftY, RightX, RightY, Buttons...]
+    -- Map to Linux Event Codes (ABS_X=0, ABS_Y=1)
+
+    -- Byte 1: X Axis (0-255) -> Map to signed (-128..127) for handleInputEvent
+    local raw_x = string.byte(data, 1) or 128
+    local val_x = raw_x - 128
+
+    -- Byte 2: Y Axis (0-255)
+    local raw_y = string.byte(data, 2) or 128
+    local val_y = raw_y - 128
+
+    -- Construct Virtual Events
+    local ev_x = { type = C.EV_ABS, code = 0, value = val_x }
+    local ev_y = { type = C.EV_ABS, code = 1, value = val_y }
+
+    -- Process Events
+    self:handleInputEvent(ev_x)
+    self:handleInputEvent(ev_y)
 end
 
 -- Parse D-pad discrete axis input (codes 16, 17 with values -1, 0, 1)
