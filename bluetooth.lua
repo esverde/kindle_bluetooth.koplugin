@@ -57,7 +57,7 @@ return {
             mac_address = "04:33:85:2C:BF:5B",     -- BLE MAC 地址 (请修改此处)
             -- service_uuid = "1812",              -- 可选: HID Service
             -- report_uuid = "2a4d",               -- 可选: Report Characteristic
-            device_path = "/dev/input/event6",     -- (仅作兼容保留)
+            device_path = "/dev/input/event2",     -- (仅作兼容保留)
             supports_dpad = false,                 -- 不支持 D-Pad 模式，仅模拟摇杆
             use_analog_mode = true,                -- 固定为模拟摇杆模式
 

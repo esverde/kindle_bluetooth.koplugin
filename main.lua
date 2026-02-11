@@ -712,22 +712,27 @@ function BluetoothController:addToMainMenu(menu_items)
                     end
                     self:loadSettings() -- Reload active profile settings
 
-                    -- Connect Logic
-                    if is_ble then
-                        if not BLEManager then
-                            UIManager:show(InfoMessage:new{ text = _("BLE服务未加载"), timeout = 2 })
-                            return
-                        end
-                        BLEManager:connect(profile.mac_address)
-                        UIManager:show(InfoMessage:new{ text = _("正在连接 BLE: ") .. name, timeout = 2 })
-                    else
-                        -- Classic Logic: Just reload mapping/device
-                        if self:reloadDevice() then
-                            UIManager:show(InfoMessage:new{ text = _("已加载配置: ") .. name, timeout = 2 })
+                    -- Unified Logic:
+                    -- 1. Connection Phase (if BLE MAC provided)
+                    if profile.mac_address and profile.mac_address ~= "" then
+                        if BLEManager then
+                            BLEManager:connect(profile.mac_address)
+                            UIManager:show(InfoMessage:new{ text = _("正在连接 BLE..."), timeout = 1 })
                         else
-                             UIManager:show(InfoMessage:new{ text = _("未找到输入设备: ") .. name, timeout = 2 })
+                            UIManager:show(InfoMessage:new{ text = _("BLE服务不可用"), timeout = 2 })
                         end
                     end
+
+                    -- 2. Input Phase (Unified)
+                    -- Always attempt to load the input device specified in config
+                    -- Delay slightly for BLE to establish, or just try immediate (user can retry)
+                    UIManager:scheduleIn(1, function()
+                        if self:reloadDevice() then
+                            UIManager:show(InfoMessage:new{ text = _("已加载设备: ") .. name, timeout = 2 })
+                        else
+                             UIManager:show(InfoMessage:new{ text = _("未找到输入设备 (可能需重试): ") .. name, timeout = 2 })
+                        end
+                    end)
                 end
             })
         end
