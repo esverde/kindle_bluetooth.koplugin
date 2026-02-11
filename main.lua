@@ -282,21 +282,16 @@ function BluetoothController:deviceExists(path)
 end
 
 function BluetoothController:reloadDevice()
-    if self.config.protocol == "ble" then
-         if BLEManager then
-             BLEManager:disconnect()
-             return BLEManager:connect(self.config.mac_address)
-         end
-         return false
+    local path = self.config.device_path
+    if not path or path == "" then
+        logger.warn("BT Plugin: No device path configured")
+        return false
     end
 
     local input = Device.input
-    if not input then return false end
 
-    local path = self.config.device_path
-
-    -- Close existing connection if open
-    if input.opened_devices and input.opened_devices[path] then
+    -- Close if already open
+    if self:isDeviceOpened(path) then
         logger.warn("BT Plugin: Reload - Closing old connection " .. path)
         pcall(function() input:close(path) end)
     end
