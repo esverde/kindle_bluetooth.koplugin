@@ -18,8 +18,8 @@ end
 function BLEManager:init(input_handler)
     self.input_handler_func = input_handler
 
-    logger.info("BLE Mgr Path: ", package.path)
-    logger.info("BLE Mgr CPath: ", package.cpath)
+    -- logger.info("BLE Mgr Path: ", package.path)
+    -- logger.info("BLE Mgr CPath: ", package.cpath)
 
     if self.service_socket then return end
 
@@ -40,9 +40,10 @@ function BLEManager:init(input_handler)
         -- local cmd = "if [ -f " .. luajit_cmd .. " ]; then " .. luajit_cmd .. " ...; else luajit ...; fi"
 
         -- 简化版：直接假设 KOReader 环境
-        local cmd = "export LD_LIBRARY_PATH=/mnt/us/koreader/libs:$LD_LIBRARY_PATH && " .. luajit_cmd .. " " .. plugin_dir .. "ble_service.lua > /dev/null 2>&1 &"
+        -- Update: Add local 'libs' folder to LD_LIBRARY_PATH
+        local cmd = "export LD_LIBRARY_PATH=" .. plugin_dir .. "libs:/mnt/us/koreader/libs:$LD_LIBRARY_PATH && " .. luajit_cmd .. " " .. plugin_dir .. "ble_service.lua > /dev/null 2>&1 &"
 
-        logger.info("BLE Manager: Launching service: " .. cmd)
+        logger.info("BLE Manager: Launching service")
         os.execute(cmd)
 
         -- 等待服务启动 (简单的延时重试)
