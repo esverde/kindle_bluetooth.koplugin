@@ -54,10 +54,6 @@ local BluetoothController = WidgetContainer:extend {
     full_config = {},
     settings_file = nil,  -- Dynamically set in getPluginDir()
 
-    -- Global protocol configuration loaded from config.lua
-    global_config = { protocol = "classic" },
-    global_config_file = nil,
-
     -- Hook activity state (per-instance, allows disabling without unregistering)
     _hook_active = true,
 }
@@ -67,9 +63,7 @@ function BluetoothController:init()
 
     local plugin_dir = self:getPluginDir()
     self.settings_file = plugin_dir .. "/bluetooth.lua"
-    self.global_config_file = plugin_dir .. "/config.lua"
 
-    self:loadGlobalConfig()
     self:loadSettings()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
@@ -77,14 +71,13 @@ function BluetoothController:init()
     -- Prevent duplicate hook registration on reload
     self:registerInputHook()
 
-    -- Attempt initial device connection based on protocol
-    if self.global_config.protocol == "classic" then
-        self:ensureConnected()
-    elseif self.global_config.protocol == "ble" then
-        if BLEManager then
-            BLEManager:init(function(data) self:handleBLEInput(data) end)
-        end
+    -- Always initialize BLE Manager if available (Mixed Mode)
+    if BLEManager then
+        BLEManager:init(function(data) self:handleBLEInput(data) end)
     end
+
+    -- Attempt initial device connection (Classic / Configured BLE)
+    self:ensureConnected()
 end
 
 -- =======================================================
@@ -104,33 +97,7 @@ end
 --  Settings Management
 -- =======================================================
 
-function BluetoothController:loadGlobalConfig()
-    local chunk, err = loadfile(self.global_config_file)
-    if chunk then
-        local success, result = pcall(chunk)
-        if success and type(result) == "table" then
-            self.global_config = result
-        else
-            logger.warn("BT Plugin: Failed to execute config.lua")
-        end
-    else
-        logger.info("BT Plugin: No config.lua found, using default.")
-    end
-end
 
-function BluetoothController:saveGlobalConfig()
-    local file = io.open(self.global_config_file, "w")
-    if not file then
-        logger.warn("BT Plugin: Failed to open config.lua for writing")
-        return
-    end
-
-    file:write("-- Global Plugin Configuration\n")
-    file:write("return {\n")
-    file:write(string.format('    protocol = "%s"\n', self.global_config.protocol or "classic"))
-    file:write("}\n")
-    file:close()
-end
 
 function BluetoothController:loadSettings()
     local file = io.open(self.settings_file, "r")
@@ -695,52 +662,79 @@ end
 function BluetoothController:addToMainMenu(menu_items)
     local sub_items = {}
 
-    local current_protocol = self.global_config.protocol
-
-    -- 0. Protocol Switcher
+    -- 1. Bluetooth toggle
     table.insert(sub_items, {
-        text = _("协议模式: ") .. (current_protocol == "ble" and "BLE (低功耗)" or "Classic (经典)"),
+        text = _("蓝牙开关"),
         keep_menu_open = true,
+        checked_func = function()
+            return self:getDisplayState()
+        end,
         callback = function(touchmenu_instance)
-            local new_proto = (current_protocol == "ble") and "classic" or "ble"
-
-            -- Protocol Switch Logic
-            if new_proto == "classic" then
-                if BLEManager then BLEManager:disconnect() end
-                self.global_config.protocol = "classic"
-                self:saveGlobalConfig()
-                self:ensureConnected() -- Scan /dev/input
-            else
-                -- Switch to BLE
-                self.global_config.protocol = "ble"
-                self:saveGlobalConfig()
-                if BLEManager then
-                    BLEManager:init(function(data) self:handleBLEInput(data) end)
-                end
-            end
-
-            -- Refresh Menu
+            local next_state = not self:getDisplayState()
+            self.target_state = next_state
+            self.last_action_time = os.time()
             touchmenu_instance:updateItems()
-            UIManager:show(InfoMessage:new{
-                text = _("已切换到: ") .. new_proto,
-                timeout = 1
-            })
-            -- Re-open menu to refresh items (KOReader menus are static once opened, usually need close/reopen or updateTable)
-            -- updateItems() might update text but not structure.
-            -- For simplicity, just update state. Using updateItems() strictly updates valid items.
-            -- Replacing sub_item_table on the fly is tricky.
-            -- Ideally, we need to instruct user to re-open menu or implement dynamic table.
-            -- For now, text update implies change. Best UX is usually to show all opts but disable/hide?
-            -- Or just dynamic list implies next open will be different.
-            -- Actually, let's keep it simple: Changing this triggers a full menu rebuild if possible,
-            -- but commonly in KOReader plugins, we just change internal state.
-            -- To reflect structure change immediately, we might need to close menu.
-            UIManager:close(touchmenu_instance)
-        end
+            self:setBluetoothState(next_state)
+        end,
     })
 
-    -- Common Options
-    -- 1. Invert direction
+    -- 2. Device List (Unified)
+    if self.full_config and self.full_config.profiles then
+        -- Sort profiles by name for consistent order
+        local sorted_profiles = {}
+        for id, profile in pairs(self.full_config.profiles) do
+            table.insert(sorted_profiles, {id = id, profile = profile})
+        end
+        table.sort(sorted_profiles, function(a, b)
+            return (a.profile.name or a.id) < (b.profile.name or b.id)
+        end)
+
+        for _, item in ipairs(sorted_profiles) do
+            local profile_id = item.id
+            local profile = item.profile
+            local name = profile.name or profile_id
+
+            -- Determine type
+            local is_ble = (profile.protocol == "ble") or (profile.mac_address and profile.mac_address ~= "")
+            local label_prefix = is_ble and "BLE: " or "Classic: "
+
+            table.insert(sub_items, {
+                text = _(label_prefix) .. name,
+                checked_func = function()
+                    return self.active_profile == profile_id
+                end,
+                callback = function()
+                    -- Activate Profile
+                    self.active_profile = profile_id
+                    if self.full_config and self.full_config.common then
+                        self.full_config.common.active_profile = profile_id
+                        self:saveFullConfig()
+                    end
+                    self:loadSettings() -- Reload active profile settings
+
+                    -- Connect Logic
+                    if is_ble then
+                        if not BLEManager then
+                            UIManager:show(InfoMessage:new{ text = _("BLE服务未加载"), timeout = 2 })
+                            return
+                        end
+                        BLEManager:connect(profile.mac_address)
+                        UIManager:show(InfoMessage:new{ text = _("正在连接 BLE: ") .. name, timeout = 2 })
+                    else
+                        -- Classic Logic: Just reload mapping/device
+                        if self:reloadDevice() then
+                            UIManager:show(InfoMessage:new{ text = _("已加载配置: ") .. name, timeout = 2 })
+                        else
+                             UIManager:show(InfoMessage:new{ text = _("未找到输入设备: ") .. name, timeout = 2 })
+                        end
+                    end
+                end
+            })
+        end
+    end
+
+    -- 3. Common Options
+    -- Invert direction
     table.insert(sub_items, {
         text = _("反转方向"),
         checked_func = function() return self.config.invert_layout end,
@@ -753,7 +747,7 @@ function BluetoothController:addToMainMenu(menu_items)
         end
     })
 
-    -- 2. Wakeup Delay
+    -- Wakeup Delay
     table.insert(sub_items, {
         text = _("唤醒延迟"),
         keep_menu_open = true,
@@ -783,125 +777,40 @@ function BluetoothController:addToMainMenu(menu_items)
         end,
     })
 
-
-    -- =====================================================
-    -- BLE Specific Options
-    -- =====================================================
-    if current_protocol == "ble" then
-        -- BLE Profile Connections
-        if self.config and self.config.profiles then
-            for key, profile in pairs(self.config.profiles) do
-                -- Only show BLE profiles (either explicitly protocol="ble" or having mac_address)
-                local is_ble = (profile.protocol == "ble") or (profile.mac_address and profile.mac_address ~= "")
-                if is_ble and profile.mac_address then
-                    table.insert(sub_items, {
-                        text = _("连接: ") .. (profile.name or key),
-                        callback = function()
-                            if not BLEManager then
-                                UIManager:show(InfoMessage:new{ text = _("BLE服务未加载"), timeout = 2 })
-                                return
-                            end
-                            BLEManager:connect(profile.mac_address)
-                            UIManager:show(InfoMessage:new{ text = _("正在请求连接: ") .. profile.mac_address, timeout = 2 })
-                        end
-                    })
-                end
+    -- 4. Utility Options
+    -- Disconnect BLE
+    table.insert(sub_items, {
+        text = _("断开 BLE 连接"),
+        callback = function()
+            if BLEManager then
+                BLEManager:disconnect()
+                UIManager:show(InfoMessage:new{ text = _("已断开 BLE"), timeout = 2 })
             end
         end
+    })
 
-        -- Disconnect
-        table.insert(sub_items, {
-            text = _("断开所有连接"),
-            callback = function()
-                if BLEManager then
-                    BLEManager:disconnect()
-                    UIManager:show(InfoMessage:new{ text = _("已发送断开请求"), timeout = 2 })
-                end
+    -- Reload Input Devices (useful for Classic)
+    table.insert(sub_items, {
+        text = _("重新扫描输入设备"),
+        callback = function()
+            -- Force reload current config's device
+            self:loadSettings()
+            if self:reloadDevice() then
+                UIManager:show(InfoMessage:new{ text = _("设备已重载"), timeout = 2 })
+            else
+                UIManager:show(InfoMessage:new{ text = _("重载失败"), timeout = 2 })
             end
-        })
+        end
+    })
 
-        -- Clean up Dumps
-        table.insert(sub_items, {
-            text = _("清理蓝牙垃圾"),
-            callback = function()
-                local count = self:cleanupBluetoothDumps()
-                UIManager:show(InfoMessage:new{ text = string.format(_("已清理 %d 个文件"), count), timeout = 2 })
-            end
-        })
-
-    -- =====================================================
-    -- Classic Specific Options
-    -- =====================================================
-    else -- classic
-        -- Connected Devices (Classic scanning logic)
-        table.insert(sub_items, {
-            text = _("已连接设备 (输入事件)"),
-            keep_menu_open = true,
-            callback = function()
-                local devices = self:scanJoystickDevices()
-                local current_device = self.config.device_path
-                local msg = ""
-                if #devices == 0 then
-                    msg = _("未找到输入设备")
-                else
-                    for _, dev in ipairs(devices) do
-                        local status = ""
-                        if dev.path == current_device then
-                            status = dev.connected and "[当前]" or "[已配置]"
-                        else
-                            status = dev.connected and "[已连接]" or "[可用]"
-                        end
-                        msg = msg .. string.format("%s %s", status, dev.name)
-                    end
-                end
-                UIManager:show(InfoMessage:new{ text = msg, timeout = 5 })
-            end,
-        })
-
-        -- Switch Profile (Classic uses profiles for mapping only, not connection usually)
-        table.insert(sub_items, {
-            text = _("切换按键配置"),
-            keep_menu_open = true,
-            sub_item_table_func = function()
-                local profiles = {}
-                if self.full_config and self.full_config.profiles then
-                    for profile_id, profile in pairs(self.full_config.profiles) do
-                        -- Only show Classic profiles
-                        if not profile.protocol or profile.protocol == "classic" then
-                            table.insert(profiles, {
-                                text = profile.name or profile_id,
-                                checked_func = function() return self.active_profile == profile_id end,
-                                callback = function()
-                                    self.active_profile = profile_id
-                                    if self.full_config and self.full_config.common then
-                                        self.full_config.common.active_profile = profile_id
-                                        self:saveFullConfig()
-                                    end
-                                    self:loadSettings()
-                                    self:reloadDevice()
-                                    UIManager:show(InfoMessage:new{ text = _("已切换到 ") .. (profile.name or profile_id), timeout = 2 })
-                                end,
-                            })
-                        end
-                    end
-                end
-                return profiles
-            end,
-        })
-
-        -- Reload device
-        table.insert(sub_items, {
-            text = _("重新加载输入设备"),
-            callback = function()
-                self:loadSettings()
-                if self:reloadDevice() then
-                    UIManager:show(InfoMessage:new{ text = _("设备已加载"), timeout = 2 })
-                else
-                    UIManager:show(InfoMessage:new{ text = _("加载失败"), timeout = 2 })
-                end
-            end
-        })
-    end
+    -- Clean up Dumps
+    table.insert(sub_items, {
+        text = _("清理蓝牙垃圾"),
+        callback = function()
+            local count = self:cleanupBluetoothDumps()
+            UIManager:show(InfoMessage:new{ text = string.format(_("已清理 %d 个文件"), count), timeout = 2 })
+        end
+    })
 
     menu_items.bluetooth_controller = {
         text = _("蓝牙翻页器"),
