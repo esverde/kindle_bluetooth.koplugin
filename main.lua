@@ -3,12 +3,12 @@ local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local InputDialog = require("ui/widget/inputdialog")
 local Event = require("ui/event")
 local logger = require("logger")
 local DataStorage = require("datastorage")
 local time = require("ui/time")
 local _ = require("gettext")
-local ffi = require("ffi")
 local ffi = require("ffi")
 
 -- Add plugin directory to package.path to ensure we can require 'ble.manager'
@@ -26,7 +26,7 @@ setup_plugin_path()
 local C = ffi.C
 local BLEManager = nil
 -- Use pcall to load BLE manager so failure doesn't crash the whole plugin
-local status, valid_manager_or_err = pcall(require, "ble.manager")
+local status, valid_manager_or_err = pcall(require, "ble_manager")
 if status and valid_manager_or_err then
     BLEManager = valid_manager_or_err
 else
@@ -281,6 +281,7 @@ end
 function BluetoothController:reloadDevice()
     if self.config.protocol == "ble" then
          if BLEManager then
+             BLEManager:disconnect()
              return BLEManager:connect(self.config.mac_address)
          end
          return false
@@ -656,213 +657,247 @@ end
 -- =======================================================
 
 function BluetoothController:addToMainMenu(menu_items)
-    menu_items.bluetooth_controller = {
-        text = _("蓝牙翻页器"),
-        sorting_hint = "tools",
-        sub_item_table = {
-            -- 1. Bluetooth toggle
-            {
-                text = _("蓝牙开关"),
-                keep_menu_open = true,
-                checked_func = function()
-                    return self:getDisplayState()
-                end,
-                callback = function(touchmenu_instance)
-                    local next_state = not self:getDisplayState()
-                    self.target_state = next_state
-                    self.last_action_time = os.time()
-                    touchmenu_instance:updateItems()
-                    self:setBluetoothState(next_state)
-                end,
-            },
+    local sub_items = {}
 
-            -- 2. Connected Devices
-            {
-                text = _("已连接设备"),
-                keep_menu_open = true,
-                callback = function()
-                    local devices = self:scanJoystickDevices()
-                    local current_device = self.config.device_path
-                    local msg = ""
-                    if #devices == 0 then
-                        msg = _("未找到手柄设备")
+    -- 1. Bluetooth toggle
+    table.insert(sub_items, {
+        text = _("蓝牙开关"),
+        keep_menu_open = true,
+        checked_func = function()
+            return self:getDisplayState()
+        end,
+        callback = function(touchmenu_instance)
+            local next_state = not self:getDisplayState()
+            self.target_state = next_state
+            self.last_action_time = os.time()
+            touchmenu_instance:updateItems()
+            self:setBluetoothState(next_state)
+        end,
+    })
+
+    -- 2. Dynamic Profile Connections (Quick Connect)
+    if self.config and self.config.profiles then
+        for key, profile in pairs(self.config.profiles) do
+            if profile.mac_address and profile.mac_address ~= "" then
+                table.insert(sub_items, {
+                    text = _("连接: ") .. (profile.name or key),
+                    callback = function()
+                        if not BLEManager then
+                            UIManager:show(InfoMessage:new{ text = _("BLE服务未加载"), timeout = 2 })
+                            return
+                        end
+                        BLEManager:connect(profile.mac_address)
+                        UIManager:show(InfoMessage:new{ text = _("正在请求连接: ") .. profile.mac_address, timeout = 2 })
+                    end
+                })
+            end
+        end
+    end
+
+    -- 3. Disconnect
+    table.insert(sub_items, {
+        text = _("断开所有连接"),
+        callback = function()
+            if BLEManager then
+                BLEManager:disconnect()
+                UIManager:show(InfoMessage:new{ text = _("已发送断开请求"), timeout = 2 })
+            end
+        end
+    })
+
+    -- 5. Connected Devices
+    table.insert(sub_items, {
+        text = _("已连接设备"),
+        keep_menu_open = true,
+        callback = function()
+            local devices = self:scanJoystickDevices()
+            local current_device = self.config.device_path
+            local msg = ""
+            if #devices == 0 then
+                msg = _("未找到手柄设备")
+            else
+                for _, dev in ipairs(devices) do
+                    local status = ""
+                    if dev.path == current_device then
+                        status = dev.connected and "[当前]" or "[已配置]"
                     else
-                        for _, dev in ipairs(devices) do
-                            local status = ""
-                            if dev.path == current_device then
-                                status = dev.connected and "[当前]" or "[已配置]"
-                            else
-                                status = dev.connected and "[已连接]" or "[可用]"
-                            end
-                            msg = msg .. string.format("%s %s", status, dev.name)
-                        end
+                        status = dev.connected and "[已连接]" or "[可用]"
                     end
-
-                    UIManager:show(InfoMessage:new{ text = msg, timeout = 2 })
-                end,
-            },
-
-            -- 3. Switch Profile
-            {
-                text = _("切换配置"),
-                keep_menu_open = true,
-                sub_item_table_func = function()
-                    local profiles = {}
-
-                    if self.full_config and self.full_config.profiles then
-                        for profile_id, profile in pairs(self.full_config.profiles) do
-                            table.insert(profiles, {
-                                text = profile.name or profile_id,
-                                checked_func = function()
-                                    return self.active_profile == profile_id
-                                end,
-                                callback = function()
-                                    -- Update active profile
-                                    self.active_profile = profile_id
-
-                                    -- Save to config file
-                                    if self.full_config and self.full_config.common then
-                                        self.full_config.common.active_profile = profile_id
-                                        self:saveFullConfig()
-                                    end
-
-                                    -- Reload settings and device
-                                    self:loadSettings()
-                                    if self:reloadDevice() then
-                                        UIManager:show(InfoMessage:new{
-                                            text = _("已切换到 ") .. (profile.name or profile_id),
-                                            timeout = 2
-                                        })
-                                    else
-                                        UIManager:show(InfoMessage:new{
-                                            text = _("配置已切换，但未找到设备"),
-                                            timeout = 2
-                                        })
-                                    end
-                                end,
-                            })
-                        end
-                    end
-
-                    return profiles
-                end,
-            },
-
-            -- 4. Invert direction
-            {
-                text = _("反转方向"),
-                checked_func = function() return self.config.invert_layout end,
-                callback = function()
-                    self.config.invert_layout = not self.config.invert_layout
-
-                    -- Save to full config
-                    if self.full_config and self.full_config.common then
-                        self.full_config.common.invert_layout = self.config.invert_layout
-                        self:saveFullConfig()
-                    end
+                    msg = msg .. string.format("%s %s", status, dev.name)
                 end
-            },
-            -- 5. Joystick Mode (only show if controller supports D-Pad)
-            {
-                text = _("摇杆模式"),
-                enabled_func = function()
-                    return self.config.supports_dpad == true
-                end,
-                sub_item_table = {
-                    {
-                        text = _("模拟摇杆"),
-                        checked_func = function() return self.config.use_analog_mode end,
+            end
+
+            UIManager:show(InfoMessage:new{
+                text = msg,
+                timeout = 5,
+            })
+        end,
+    })
+
+    -- 6. Switch Profile
+    table.insert(sub_items, {
+        text = _("切换配置"),
+        keep_menu_open = true,
+        sub_item_table_func = function()
+            local profiles = {}
+            if self.full_config and self.full_config.profiles then
+                for profile_id, profile in pairs(self.full_config.profiles) do
+                    table.insert(profiles, {
+                        text = profile.name or profile_id,
+                        checked_func = function()
+                            return self.active_profile == profile_id
+                        end,
                         callback = function()
-                            self.config.use_analog_mode = true
-                            _shared_triggered = false  -- Reset lock state
+                            -- Update active profile
+                            self.active_profile = profile_id
 
-                            -- Save to full config
-                            if self.full_config and self.full_config.profiles and self.active_profile then
-                                local profile = self.full_config.profiles[self.active_profile]
-                                if profile then
-                                    profile.use_analog_mode = true
-                                    self:saveFullConfig()
-                                end
-                            end
-                        end
-                    },
-                    {
-                        text = _("方向键"),
-                        checked_func = function() return not self.config.use_analog_mode end,
-                        callback = function()
-                            self.config.use_analog_mode = false
-
-                            -- Save to full config
-                            if self.full_config and self.full_config.profiles and self.active_profile then
-                                local profile = self.full_config.profiles[self.active_profile]
-                                if profile then
-                                    profile.use_analog_mode = false
-                                    self:saveFullConfig()
-                                end
-                            end
-                        end
-                    }
-                }
-            },
-
-            -- 6. Wakeup Delay
-            {
-                text = _("唤醒延迟"),
-                keep_menu_open = true,
-                callback = function()
-                    local SpinWidget = require("ui/widget/spinwidget")
-                    local current_delay = self.wakeup_delay or 3
-                    UIManager:show(SpinWidget:new{
-                        title_text = _("设置唤醒延迟（秒）"),
-                        value = current_delay,
-                        value_min = 1,
-                        value_max = 10,
-                        value_step = 1,
-                        value_hold_step = 2,
-                        ok_text = _("确定"),
-                        callback = function(spin)
-                            self.wakeup_delay = spin.value
-
-                            -- Save to full config
+                            -- Save to config file
                             if self.full_config and self.full_config.common then
-                                self.full_config.common.wakeup_delay = spin.value
+                                self.full_config.common.active_profile = profile_id
                                 self:saveFullConfig()
                             end
 
-                            UIManager:show(InfoMessage:new{
-                                text = _("唤醒延迟已设置为 ") .. spin.value .. _(" 秒"),
-                                timeout = 2
-                            })
-                        end
+                            -- Reload settings and device
+                            self:loadSettings()
+                            if self:reloadDevice() then
+                                UIManager:show(InfoMessage:new{
+                                    text = _("已切换到 ") .. (profile.name or profile_id),
+                                    timeout = 2
+                                })
+                            else
+                                UIManager:show(InfoMessage:new{
+                                    text = _("配置已切换，但未找到设备"),
+                                    timeout = 2
+                                })
+                            end
+                        end,
                     })
-                end,
-            },
-            -- 7. Reload device
+                end
+            end
+            return profiles
+        end,
+    })
+
+    -- 7. Invert direction
+    table.insert(sub_items, {
+        text = _("反转方向"),
+        checked_func = function() return self.config.invert_layout end,
+        callback = function()
+            self.config.invert_layout = not self.config.invert_layout
+            -- Save to full config
+            if self.full_config and self.full_config.common then
+                self.full_config.common.invert_layout = self.config.invert_layout
+                self:saveFullConfig()
+            end
+        end
+    })
+
+    -- 8. Joystick Mode
+    table.insert(sub_items, {
+        text = _("摇杆模式"),
+        enabled_func = function()
+            return self.config.supports_dpad == true
+        end,
+        sub_item_table = {
             {
-                text = _("重新加载设备"),
+                text = _("模拟摇杆"),
+                checked_func = function() return self.config.use_analog_mode end,
                 callback = function()
-                    self:loadSettings()
-                    if self:reloadDevice() then
-                        UIManager:show(InfoMessage:new{ text = _("设备已加载"), timeout = 2 })
-                    else
-                        UIManager:show(InfoMessage:new{ text = _("加载失败"), timeout = 2 })
+                    self.config.use_analog_mode = true
+                    _shared_triggered = false  -- Reset lock state
+                    if self.full_config and self.full_config.profiles and self.active_profile then
+                        local profile = self.full_config.profiles[self.active_profile]
+                        if profile then
+                            profile.use_analog_mode = true
+                            self:saveFullConfig()
+                        end
                     end
                 end
             },
-
-            -- 8. Clean up Bluetooth dump files
             {
-                text = _("清理蓝牙垃圾"),
+                text = _("方向键"),
+                checked_func = function() return not self.config.use_analog_mode end,
                 callback = function()
-                    local count = self:cleanupBluetoothDumps()
-                    UIManager:show(InfoMessage:new{
-                        text = string.format(_("已清理 %d 个文件"), count),
-                        timeout = 2
-                    })
+                    self.config.use_analog_mode = false
+                    if self.full_config and self.full_config.profiles and self.active_profile then
+                        local profile = self.full_config.profiles[self.active_profile]
+                        if profile then
+                            profile.use_analog_mode = false
+                            self:saveFullConfig()
+                        end
+                    end
                 end
             }
         }
+    })
+
+    -- 9. Wakeup Delay
+    table.insert(sub_items, {
+        text = _("唤醒延迟"),
+        keep_menu_open = true,
+        callback = function()
+            local SpinWidget = require("ui/widget/spinwidget")
+            local current_delay = self.wakeup_delay or 3
+            UIManager:show(SpinWidget:new{
+                title_text = _("设置唤醒延迟（秒）"),
+                value = current_delay,
+                value_min = 1,
+                value_max = 10,
+                value_step = 1,
+                value_hold_step = 2,
+                ok_text = _("确定"),
+                callback = function(spin)
+                    self.wakeup_delay = spin.value
+                    if self.full_config and self.full_config.common then
+                        self.full_config.common.wakeup_delay = spin.value
+                        self:saveFullConfig()
+                    end
+                    UIManager:show(InfoMessage:new{
+                        text = _("唤醒延迟已设置为 ") .. spin.value .. _(" 秒"),
+                        timeout = 2
+                    })
+                end
+            })
+        end,
+    })
+
+    -- 10. Reload device
+    table.insert(sub_items, {
+        text = _("重新加载设备"),
+        callback = function()
+            self:loadSettings()
+            if self:reloadDevice() then
+                UIManager:show(InfoMessage:new{ text = _("设备已加载"), timeout = 2 })
+            else
+                UIManager:show(InfoMessage:new{ text = _("加载失败"), timeout = 2 })
+            end
+        end
+    })
+
+    -- 11. Clean up Bluetooth dump files
+    table.insert(sub_items, {
+        text = _("清理蓝牙垃圾"),
+        callback = function()
+            local count = self:cleanupBluetoothDumps()
+            UIManager:show(InfoMessage:new{
+                text = string.format(_("已清理 %d 个文件"), count),
+                timeout = 2
+            })
+        end
+    })
+
+    menu_items.bluetooth_controller = {
+        text = _("蓝牙翻页器"),
+        sorting_hint = "tools",
+        sub_item_table = sub_items
     }
+end
+
+function BluetoothController:onExit()
+    if BLEManager then
+        BLEManager:disconnect()
+    end
+    return true
 end
 
 return BluetoothController
