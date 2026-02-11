@@ -243,28 +243,16 @@ function BluetoothController:ensureConnected()
     end
 
     -- Classic Logic
-    local input = Device.input
-    if not input then return false end
-
     local path = self.config.device_path
-
-    -- Already connected
-    if input.opened_devices and input.opened_devices[path] then
-        return true
-    end
+    if self:isDeviceOpened(path) then return true end
 
     -- Check if device file exists
     if not self:deviceExists(path) then
-        logger.info("BT Plugin: Device " .. path .. " not found (Controller off?)")
+        logger.info("BT Plugin: Device " .. path .. " not found")
         return false
     end
 
-    -- Reset shared state on new connection
-    _shared_axis_values = {}
-    _shared_triggered = false
-
-    local success, err = pcall(function() input:open(path) end)
-
+    local success, err = self:_attemptOpenDevice(path)
     if not success then
         logger.warn("BT Plugin: Failed to open -> " .. tostring(err))
     end
@@ -279,6 +267,24 @@ function BluetoothController:deviceExists(path)
         return true
     end
     return false
+end
+
+-- Helper: encapsulate critical section for opening device
+function BluetoothController:_attemptOpenDevice(path)
+    local input = Device.input
+    if not input then return false, "No Input Module" end
+
+    -- Reset shared state on new connection
+    _shared_axis_values = {}
+    _shared_triggered = false
+
+    local success, err = pcall(function() input:open(path) end)
+
+    if success then
+        self:cleanupBluetoothDumps()
+    end
+
+    return success, err
 end
 
 function BluetoothController:reloadDevice()
@@ -657,13 +663,24 @@ end
 function BluetoothController:addToMainMenu(menu_items)
     local sub_items = {}
 
-    -- 1. Bluetooth toggle
+    self:_addBluetoothToggle(sub_items)
+    self:_addDeviceList(sub_items)
+    self:_addCommonOptions(sub_items)
+    self:_addUtilityOptions(sub_items)
+
+    menu_items.bluetooth_controller = {
+        text = _("蓝牙翻页器"),
+        sorting_hint = "tools",
+        sub_item_table = sub_items,
+    }
+end
+
+-- Menu Helper: Bluetooth Toggle
+function BluetoothController:_addBluetoothToggle(sub_items)
     table.insert(sub_items, {
         text = _("蓝牙开关"),
         keep_menu_open = true,
-        checked_func = function()
-            return self:getDisplayState()
-        end,
+        checked_func = function() return self:getDisplayState() end,
         callback = function(touchmenu_instance)
             local next_state = not self:getDisplayState()
             self.target_state = next_state
@@ -672,68 +689,71 @@ function BluetoothController:addToMainMenu(menu_items)
             self:setBluetoothState(next_state)
         end,
     })
+end
 
-    -- 2. Device List (Unified)
-    if self.full_config and self.full_config.profiles then
-        -- Sort profiles by name for consistent order
-        local sorted_profiles = {}
-        for id, profile in pairs(self.full_config.profiles) do
-            table.insert(sorted_profiles, {id = id, profile = profile})
-        end
-        table.sort(sorted_profiles, function(a, b)
-            return (a.profile.name or a.id) < (b.profile.name or b.id)
-        end)
+-- Menu Helper: Device List (Unified)
+function BluetoothController:_addDeviceList(sub_items)
+    if not (self.full_config and self.full_config.profiles) then return end
 
-        for idx, item in ipairs(sorted_profiles) do
-            local profile_id = item.id
-            local profile = item.profile
-            local name = profile.name or profile_id
+    -- Sort profiles
+    local sorted_profiles = {}
+    for id, profile in pairs(self.full_config.profiles) do
+        table.insert(sorted_profiles, {id = id, profile = profile})
+    end
+    table.sort(sorted_profiles, function(a, b)
+        return (a.profile.name or a.id) < (b.profile.name or b.id)
+    end)
 
-            -- Determine type
-            local is_ble = (profile.protocol == "ble") or (profile.mac_address and profile.mac_address ~= "")
-            local label_prefix = is_ble and "BLE: " or "Classic: "
+    for _, item in ipairs(sorted_profiles) do
+        local profile_id = item.id
+        local profile = item.profile
+        local name = profile.name or profile_id
 
-            table.insert(sub_items, {
-                text = _(label_prefix) .. name,
-                checked_func = function()
-                    return self.active_profile == profile_id
-                end,
-                callback = function()
-                    -- Activate Profile
-                    self.active_profile = profile_id
-                    if self.full_config and self.full_config.common then
-                        self.full_config.common.active_profile = profile_id
-                        self:saveFullConfig()
-                    end
-                    self:loadSettings() -- Reload active profile settings
+        -- Determine display label
+        local is_ble_connection = (profile.protocol == "ble") or (profile.mac_address and profile.mac_address ~= "")
+        local label_prefix = is_ble_connection and "BLE: " or "Classic: "
 
-                    -- Unified Logic:
-                    -- 1. Connection Phase (if BLE MAC provided)
-                    if profile.mac_address and profile.mac_address ~= "" then
-                        if BLEManager then
-                            BLEManager:connect(profile.mac_address)
-                            UIManager:show(InfoMessage:new{ text = _("正在连接 BLE..."), timeout = 1 })
-                        else
-                            UIManager:show(InfoMessage:new{ text = _("BLE服务不可用"), timeout = 2 })
-                        end
-                    end
+        table.insert(sub_items, {
+            text = _(label_prefix) .. name,
+            checked_func = function() return self.active_profile == profile_id end,
+            callback = function()
+                self:activateProfile(profile_id, profile, name)
+            end
+        })
+    end
+end
 
-                    -- 2. Input Phase (Unified)
-                    -- Always attempt to load the input device specified in config
-                    -- Delay slightly for BLE to establish, or just try immediate (user can retry)
-                    UIManager:scheduleIn(1, function()
-                        if self:reloadDevice() then
-                            UIManager:show(InfoMessage:new{ text = _("已加载设备: ") .. name, timeout = 2 })
-                        else
-                             UIManager:show(InfoMessage:new{ text = _("未找到输入设备 (可能需重试): ") .. name, timeout = 2 })
-                        end
-                    end)
-                end
-            })
+-- Helper to activate a profile logic
+function BluetoothController:activateProfile(profile_id, profile, name)
+    self.active_profile = profile_id
+    if self.full_config and self.full_config.common then
+        self.full_config.common.active_profile = profile_id
+        self:saveFullConfig()
+    end
+    self:loadSettings()
+
+    -- 1. Connection Phase (if BLE MAC provided)
+    if profile.mac_address and profile.mac_address ~= "" then
+        if BLEManager then
+            BLEManager:connect(profile.mac_address)
+            UIManager:show(InfoMessage:new{ text = _("正在连接 BLE..."), timeout = 1 })
+        else
+            UIManager:show(InfoMessage:new{ text = _("BLE服务不可用"), timeout = 2 })
         end
     end
 
-    -- 3. Common Options
+    -- 2. Input Phase (Unified)
+    UIManager:scheduleIn(1, function()
+        if self:reloadDevice() then
+            UIManager:show(InfoMessage:new{ text = _("已加载设备: ") .. name, timeout = 2 })
+        else
+            UIManager:show(InfoMessage:new{ text = _("未找到输入设备 (可能需重试): ") .. name, timeout = 2 })
+        end
+    end)
+end
+
+-- Menu Helper: Common Options
+function BluetoothController:_addCommonOptions(sub_items)
     -- Invert direction
     table.insert(sub_items, {
         text = _("反转方向"),
@@ -768,16 +788,15 @@ function BluetoothController:addToMainMenu(menu_items)
                         self.full_config.common.wakeup_delay = spin.value
                         self:saveFullConfig()
                     end
-                    UIManager:show(InfoMessage:new{
-                        text = _("唤醒延迟已设置为 ") .. spin.value .. _(" 秒"),
-                        timeout = 2
-                    })
+                    UIManager:show(InfoMessage:new{text = _("唤醒延迟已设置为 ") .. spin.value .. _(" 秒"), timeout = 2})
                 end
             })
         end,
     })
+end
 
-    -- 4. Utility Options
+-- Menu Helper: Utility Options
+function BluetoothController:_addUtilityOptions(sub_items)
     -- Disconnect BLE
     table.insert(sub_items, {
         text = _("断开 BLE 连接"),
@@ -789,11 +808,10 @@ function BluetoothController:addToMainMenu(menu_items)
         end
     })
 
-    -- Reload Input Devices (useful for Classic)
+    -- Reload Input Devices
     table.insert(sub_items, {
         text = _("重新扫描输入设备"),
         callback = function()
-            -- Force reload current config's device
             self:loadSettings()
             if self:reloadDevice() then
                 UIManager:show(InfoMessage:new{ text = _("设备已重载"), timeout = 2 })
@@ -811,13 +829,9 @@ function BluetoothController:addToMainMenu(menu_items)
             UIManager:show(InfoMessage:new{ text = string.format(_("已清理 %d 个文件"), count), timeout = 2 })
         end
     })
-
-    menu_items.bluetooth_controller = {
-        text = _("蓝牙翻页器"),
-        sorting_hint = "tools",
-        sub_item_table = sub_items
-    }
 end
+
+
 
 function BluetoothController:onExit()
     if BLEManager then

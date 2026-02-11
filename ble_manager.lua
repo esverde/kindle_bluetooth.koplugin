@@ -18,29 +18,10 @@ end
 function BLEManager:init(input_handler)
     self.input_handler_func = input_handler
 
-    -- logger.info("BLE Mgr Path: ", package.path)
-    -- logger.info("BLE Mgr CPath: ", package.cpath)
-
-    if self.service_socket then return end
-
-    logger.info("BLE Manager: 正在连接后台服务...")
-
-    -- 尝试连接服务
-    local client = socket.connect("127.0.0.1", 50010)
-    if not client then
-        logger.warn("BLE Manager: 服务未运行，正在启动 ble_service.lua ...")
-
-        -- 启动后台进程 (设置 LD_LIBRARY_PATH 并使用 exec)
+        -- Start background service (Set LD_LIBRARY_PATH to include local libs)
         local plugin_dir = get_plugin_dir()
-        -- 核心修复：显式设置库路径并使用绝对路径启动 luajit
-        -- 这里的路径需要根据实际情况可能是 /usr/bin/luajit 或 /mnt/us/koreader/luajit
-        -- 稳妥起见，我们尝试使用 KOReader 自带的 luajit
         local luajit_cmd = "/mnt/us/koreader/luajit"
-        -- 如果找不到，尝试系统路径
-        -- local cmd = "if [ -f " .. luajit_cmd .. " ]; then " .. luajit_cmd .. " ...; else luajit ...; fi"
 
-        -- 简化版：直接假设 KOReader 环境
-        -- Update: Add local 'libs' folder to LD_LIBRARY_PATH
         local cmd = "export LD_LIBRARY_PATH=" .. plugin_dir .. "libs:/mnt/us/koreader/libs:$LD_LIBRARY_PATH && " .. luajit_cmd .. " " .. plugin_dir .. "ble_service.lua > /dev/null 2>&1 &"
 
         logger.info("BLE Manager: Launching service")
