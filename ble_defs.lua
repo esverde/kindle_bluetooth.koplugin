@@ -238,4 +238,5 @@ return {
         str2addr = str2addr,
     },
     err = k_err,
+    SERVICE_PORT = 50010,
 }

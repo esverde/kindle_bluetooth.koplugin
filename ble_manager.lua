@@ -2,6 +2,9 @@ local logger = require("logger")
 local socket = require("socket")
 local UIManager = require("ui/uimanager")
 local Notification = require("ui/widget/notification")
+local ble_defs = require("ble_defs")
+
+local SERVICE_PORT = ble_defs.SERVICE_PORT or 50010
 
 local BLEManager = {
     service_socket = nil,
@@ -18,27 +21,23 @@ end
 function BLEManager:init(input_handler)
     self.input_handler_func = input_handler
 
-        -- Start background service (Set LD_LIBRARY_PATH to include local libs)
-        local plugin_dir = get_plugin_dir()
-        local luajit_cmd = "/mnt/us/koreader/luajit"
+    -- Start background service (Set LD_LIBRARY_PATH to include local libs)
+    local plugin_dir = get_plugin_dir()
+    local luajit_cmd = "/mnt/us/koreader/luajit"
 
-        local cmd = "export LD_LIBRARY_PATH=" .. plugin_dir .. "libs:/mnt/us/koreader/libs:$LD_LIBRARY_PATH && " .. luajit_cmd .. " " .. plugin_dir .. "ble_service.lua > /dev/null 2>&1 &"
+    local cmd = "export LD_LIBRARY_PATH=" .. plugin_dir .. "libs:/mnt/us/koreader/libs:$LD_LIBRARY_PATH && " .. luajit_cmd .. " " .. plugin_dir .. "ble_service.lua > /dev/null 2>&1 &"
 
-        logger.info("BLE Manager: Launching service")
-        os.execute(cmd)
+    logger.info("BLE Manager: Launching service")
+    os.execute(cmd)
 
-        -- 等待服务启动 (简单的延时重试)
-        UIManager:scheduleIn(1, function()
-            self:retryConnect(5)
-        end)
-    else
-        logger.info("BLE Manager: 已连接到现有服务")
-        self:setupClient(client)
-    end
+    -- 等待服务启动 (简单的延时重试)
+    UIManager:scheduleIn(1, function()
+        self:retryConnect(5)
+    end)
 end
 
 function BLEManager:retryConnect(retries)
-    local client = socket.connect("127.0.0.1", 50010)
+    local client = socket.connect("127.0.0.1", SERVICE_PORT)
     if client then
         logger.info("BLE Manager: 服务启动成功并已连接")
         self:setupClient(client)

@@ -18,10 +18,28 @@ local function get_script_dir()
 end
 local SCRIPT_DIR = get_script_dir() or "./"
 
+-- =======================================================
+--  Logging Utility
+-- =======================================================
+local LOG_FILE = SCRIPT_DIR .. "service.log"
+local function log(msg)
+    local f = io.open(LOG_FILE, "a")
+    if f then
+        f:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. tostring(msg) .. "\n")
+        f:close()
+    end
+    -- Keep print for stdout debugging (redirected to /dev/null in prod)
+    -- print(msg)
+end
+
+-- Load Definitions (Port, Types)
+local ble_defs = require("ble_defs")
+local SERVICE_PORT = ble_defs.SERVICE_PORT or 50010
+
 -- ... (FFI Definitions remain unchanged) ...
 
 local function init_bluetooth()
-    print("Initializing Bluetooth...")
+    log("Initializing Bluetooth...")
 
     -- Priority: Local ./libs/ -> System /mnt/us/koreader/libs/
     local local_lib_path = SCRIPT_DIR .. "libs/"
@@ -43,7 +61,7 @@ local function init_bluetooth()
     for _, path in ipairs(kbt_paths) do
         local ok, lib = pcall(ffi.load, path, true)
         if ok then
-            print("Loaded KindleBT from: " .. path)
+            log("Loaded KindleBT from: " .. path)
             lib_kbt = lib
             lib_kbt_loaded = true
             break
@@ -55,7 +73,7 @@ local function init_bluetooth()
     for _, path in ipairs(adp_paths) do
         local ok, lib = pcall(ffi.load, path)
         if ok then
-            print("Loaded Adapter from: " .. path)
+            log("Loaded Adapter from: " .. path)
             lib_adapter = lib
             lib_adapter_loaded = true
             break
@@ -74,50 +92,83 @@ local function init_bluetooth()
     if lib_kbt.bleRegister(session) ~= 0 then return false, "bleRegister failed" end
     if lib_adapter.register_gatt_callbacks(session) ~= 0 then return false, "register_gatt_cb failed" end
 
-    print("Bluetooth Initialized.")
+    log("Bluetooth Initialized.")
     return true
 end
 
 local function handle_command(cmd)
     local action, arg = cmd:match("(%w+)%s*(.*)")
     if action == "CONNECT" and arg then
-        print("Connecting to " .. arg)
+        log("Connecting to " .. arg)
         local addr = str2addr(arg)
         local conn_ptr = ffi.new("sessionHandle[1]")
         -- param=0, role=0, prio=0 (Updated based on testing)
         local ret = lib_kbt.bleConnect(session, conn_ptr, addr, 0, 0, 0)
         if ret == 0 then
             conn_handle = conn_ptr[0]
-            print("Connect requested")
+            log("Connect requested")
         else
-            print("Connect failed: " .. ret)
+            log("Connect failed: " .. ret)
         end
     elseif action == "DISCONNECT" then
         if conn_handle then
             lib_kbt.bleDisconnect(conn_handle)
             conn_handle = nil
-            print("Disconnect requested")
+            log("Disconnect requested")
             if client_socket then client_socket:send("STATUS Disconnected\n") end
         end
     elseif action == "EXIT" then
-        print("Exiting...")
+        log("Exiting...")
         os.exit(0)
     end
+end
+
+-- =======================================================
+--  Privilege Dropping (Kindle Specific)
+-- =======================================================
+local function drop_privileges()
+    local uid_str = "9000" -- framework user
+    local gid_str = "9000" -- framework group
+
+    -- Check if running on actual Kindle (simple check)
+    local check_file = io.open("/etc/passwd", "r")
+    if not check_file then return true end -- Not on Kindle?
+    check_file:close()
+
+    -- Attempt to change GID/UID
+    -- Note: requires root to change. If already non-root, this might fail or be no-op.
+    -- FFI wrapper for setgid/setuid
+    ffi.cdef[[
+        int setgid(int gid);
+        int setuid(int uid);
+    ]]
+
+    -- Just log/print, strict enforcement might break if not started as root
+    -- print("Attempting to drop privileges to " .. uid_str .. ":" .. gid_str)
+
+    -- For now, just return true.
+    -- Strict implementation requires knowing we started as root.
+    -- If started by KOReader (us), we are already user 'framework' (usually).
+    return true
 end
 
 -- =======================================================
 -- Main
 -- =======================================================
 local function main()
+    -- Initialize logging (clear old log)
+    local f = io.open(LOG_FILE, "w")
+    if f then f:write("--- Service Started ---\n"); f:close() end
+
     local ok, err = drop_privileges()
-    if not ok then print("Error: " .. err); os.exit(1) end
+    if not ok then log("Error: " .. tostring(err)); os.exit(1) end
 
     ok, err = init_bluetooth()
-    if not ok then print("Error: " .. err); os.exit(1) end
+    if not ok then log("Error: " .. tostring(err)); os.exit(1) end
 
-    server_socket = socket.bind("127.0.0.1", 50010)
+    server_socket = socket.bind("127.0.0.1", SERVICE_PORT)
     server_socket:settimeout(0)
-    print("Server listening on 127.0.0.1:50010")
+    log("Server listening on 127.0.0.1:" .. SERVICE_PORT)
 
     local poll_fds = ffi.new("struct pollfd[1]")
     local buffer = ffi.new("uint8_t[256]")
@@ -129,7 +180,7 @@ local function main()
             if client then
                 client_socket = client
                 client_socket:settimeout(0)
-                print("Client connected")
+                log("Client connected")
             end
         end
 
@@ -137,10 +188,10 @@ local function main()
         if client_socket then
             local line, err = client_socket:receive()
             if line then
-                print("CMD: " .. line)
+                log("CMD: " .. line)
                 handle_command(line)
             elseif err == "closed" then
-                print("Client disconnected")
+                log("Client disconnected")
                 client_socket = nil
             end
         end

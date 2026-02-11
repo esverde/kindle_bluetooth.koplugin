@@ -497,7 +497,11 @@ end
 -- =======================================================
 
 function BluetoothController:handleBLEInput(data)
-    if not data or #data < 2 then return end
+    -- Check for nil or insufficient data
+    if not data or #data < 2 then
+        -- logger.warn("BT Plugin: Ignored short BLE packet, len=" .. (#data or 0))
+        return
+    end
 
     -- Assuming Standard Gamepad Report: [LeftX, LeftY, RightX, RightY, Buttons...]
     -- Map to Linux Event Codes (ABS_X=0, ABS_Y=1)
