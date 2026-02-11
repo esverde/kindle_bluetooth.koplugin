@@ -197,6 +197,8 @@ local function str2addr(mac_str)
     local bytes = { mac_str:match("(%x%x):(%x%x):(%x%x):(%x%x):(%x%x):(%x%x)") }
     if #bytes == 6 then
         for i = 1, 6 do
+            -- FIXED: Do not reverse bytes. Use Big Endian (Human Readable) order.
+            -- Verified via test_ble_connect.lua
             addr.address[i-1] = tonumber(bytes[i], 16)
         end
     else

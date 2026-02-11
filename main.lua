@@ -689,7 +689,7 @@ function BluetoothController:addToMainMenu(menu_items)
             return (a.profile.name or a.id) < (b.profile.name or b.id)
         end)
 
-        for _, item in ipairs(sorted_profiles) do
+        for idx, item in ipairs(sorted_profiles) do
             local profile_id = item.id
             local profile = item.profile
             local name = profile.name or profile_id

@@ -163,8 +163,8 @@ local function handle_command(cmd)
         print("Connecting to " .. arg)
         local addr = str2addr(arg)
         local conn_ptr = ffi.new("sessionHandle[1]")
-        -- param=0, role=0, prio=1
-        local ret = lib_kbt.bleConnect(session, conn_ptr, addr, 0, 0, 1)
+        -- param=0, role=0, prio=0 (Updated based on testing)
+        local ret = lib_kbt.bleConnect(session, conn_ptr, addr, 0, 0, 0)
         if ret == 0 then
             conn_handle = conn_ptr[0]
             print("Connect requested")
